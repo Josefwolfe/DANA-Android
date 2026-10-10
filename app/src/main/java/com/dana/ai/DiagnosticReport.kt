@@ -19,7 +19,7 @@ import java.util.Locale
 object DiagnosticReport {
     private fun flag(value: Boolean) = if (value) "YES" else "NO"
 
-    fun build(context: Context, voiceReady: Boolean, voiceCount: Int, offlineActive: Boolean): String {
+    fun build(context: Context, voiceReady: Boolean, voiceCount: Int, offlineActive: Boolean, ttsDetails: String = ""): String {
         val memory = UserMemory(context)
         val wake = context.getSharedPreferences("wake_runtime", Context.MODE_PRIVATE)
         val root = context.getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9.2 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.4 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))
@@ -87,6 +87,7 @@ object DiagnosticReport {
             append(check("Android on-device recognizer", onDevice))
             append(check("Persian TTS ready", flag(voiceReady)))
             append(check("Persian TTS voice count", voiceCount))
+            append(ttsDetails)
             append(check("Continuous conversation", flag(memory.conversationMode)))
             append("\n[POWER]\n")
             append(check("Battery percent", battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)))
@@ -96,6 +97,8 @@ object DiagnosticReport {
             }.getOrDefault("unknown")))
             append("\n[VOICE SESSION COUNTERS — MEMORY ONLY]\n")
             append(WakeSessionMetrics.report())
+            append("\n[WAKE COMMAND EXECUTION — MEMORY ONLY]\n")
+            append(WakeExecutionMetrics.report())
             append("Counts reset when Android terminates the app process.\n")
             append("\n[OPTIONAL TRANSCRIPT PROBE]\n")
             append(WakeSpeechProbe.report())

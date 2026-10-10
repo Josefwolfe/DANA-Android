@@ -11,7 +11,7 @@ def tool(name):
     print(f"{name:12}: {p or 'NOT FOUND'}")
     return p
 
-print("DANA Android 1.9 Offline Diagnostics Beta — build preflight")
+print("DANA Android 1.9.4 — build preflight")
 java=tool('java'); tool('python3'); tool('adb'); tool('sdkmanager')
 if not java:
     errors.append('JDK is not installed or java is not in PATH.')

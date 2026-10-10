@@ -27,6 +27,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,6 +37,33 @@ class MainActivity : Activity() {
     companion object {
         @Volatile var visibleNow: Boolean = false
             private set
+        private var visibleActivity: WeakReference<MainActivity>? = null
+
+        /** Deliver a wake command to the already-visible UI; never start an Activity in background. */
+        fun dispatchWakeCommand(phrase: String): Boolean {
+            val activity = visibleActivity?.get() ?: return false
+            if (!visibleNow || !activity.appVisible || activity.isFinishing || activity.isDestroyed) return false
+            activity.runOnUiThread {
+                if (activity.appVisible && !activity.isFinishing && !activity.isDestroyed) {
+                    activity.wakeUiHandoffPending = true
+                    activity.relistenAfterResponse = false
+                    activity.receiveSpeech(phrase)
+                }
+            }
+            return true
+        }
+
+        /** Show local service feedback even when Persian TTS is unavailable. */
+        fun showWakeFeedback(message: String) {
+            val activity = visibleActivity?.get() ?: return
+            if (!visibleNow || !activity.appVisible) return
+            activity.runOnUiThread {
+                if (activity.appVisible && !activity.isFinishing && !activity.isDestroyed) {
+                    activity.answer.text = "دانا: $message"
+                    activity.status.text = "پاسخ بیدارباش (در صورت وجود، صوتی)"
+                }
+            }
+        }
     }
     private enum class DialogState { COMMAND, NAME, PICK_CONTACT, ALIAS_NAME, ALIAS_CONFIRM, SMS_TEXT, CONFIRM_CALL, CONFIRM_SMS }
     private enum class ContactPurpose { CALL, SMS }
@@ -53,6 +81,7 @@ class MainActivity : Activity() {
     private var appVisible = false
     private var aiRequestActive = false
     private var relistenAfterResponse = false
+    private var wakeUiHandoffPending = false
     private lateinit var conversationButton: Button
     private lateinit var wakeButton: Button
 
@@ -60,6 +89,7 @@ class MainActivity : Activity() {
     private lateinit var gatewaySecrets: SecureTokenStore
     private lateinit var finder: ContactFinder
     private lateinit var voice: DanaVoice
+    private var awaitingTtsSettingsReturn = false
     private lateinit var speech: SpeechManager
     private lateinit var offlineSpeech: OfflineSpeechManager
     private var installingWakeModel = false
@@ -266,7 +296,7 @@ class MainActivity : Activity() {
     private fun showDiagnostics() {
         val report = runCatching {
             DiagnosticReport.build(this, voice.isReady(), voice.choices().size,
-                offlineSpeech.isActive())
+                offlineSpeech.isActive(), voice.diagnostics())
         }.getOrElse { error ->
             "DANA DIAGNOSTICS\nگزارش کامل تولید نشد. نوع خطا: ${error.javaClass.simpleName}\n" +
                 "مجوزها و فضای ذخیره‌سازی گوشی را بررسی کن."
@@ -643,6 +673,7 @@ class MainActivity : Activity() {
                         startService(Intent(this, DanaWakeService::class.java)
                             .setAction(DanaWakeService.ACTION_PRIVACY_CHANGED))
                     }
+                    voice.refresh() // Re-evaluate TTS: private mode cannot use a network-only voice.
                     refreshModes()
                     say(if (action.enabled) "حالت خصوصی روشن شد. فرمان‌ها با مدل Vosk فقط روی گوشی پردازش می‌شن؛ هوش مصنوعی آنلاین، گزارش و یادگیری خاموش هستند."
                         else "حالت خصوصی خاموش شد؛ بیدارباش آفلاین همچنان در دسترس است.")
@@ -664,6 +695,7 @@ class MainActivity : Activity() {
             }
             // Dispatch is not proof that an external application completed its work.
             DiagnosticEvents.record(this, "ACTION_DISPATCHED", type.uppercase(Locale.ROOT))
+            if (wakeUiHandoffPending) WakeExecutionMetrics.outcome("UI_ACTION_DISPATCHED")
             logAction(type, "dispatched", (System.nanoTime() - start) / 1_000_000)
         } catch (e: Exception) {
             DiagnosticEvents.record(this, "ACTION_ERROR", type.uppercase(Locale.ROOT))
@@ -987,27 +1019,128 @@ class MainActivity : Activity() {
             }.show()
     }
 
-    /** Only TTS voices actually installed by the user/phone are offered. */
+    /** A visible, user-driven setup and playback test; no engine is installed silently. */
     private fun showPersianVoices() {
-        val options = voice.choices()
-        if (options.isEmpty()) {
-            AlertDialog.Builder(this).setTitle("صدای فارسی")
-                .setMessage("موتور فعلی صدای فارسی ندارد. از تنظیمات تبدیل متن به گفتار گوشی بسته فارسی را نصب کنید. جنسیت صدا به موتور نصب شده بستگی دارد.")
-                .setPositiveButton("تنظیمات گفتار") { _, _ ->
-                    if (!safeLaunch(Intent("com.android.settings.TTS_SETTINGS"))) {
-                        safeLaunch(Intent(Intent.ACTION_VIEW,
-                            Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.tts")))
-                    }
-                }.setNegativeButton("بستن", null).show()
+        val options = arrayOf(
+            "🔊 آزمایش صحبت کردن دانا",
+            "🔄 بررسی دوباره صدای فارسی",
+            "🎙 انتخاب صدای فارسی نصب‌شده",
+            "⚙️ انتخاب موتور گفتار نصب‌شده",
+            "📱 تنظیمات تبدیل متن به گفتار گوشی",
+            "📦 دریافت یا به‌روزرسانی موتور گفتار"
+        )
+        AlertDialog.Builder(this).setTitle("صدای فارسی دانا")
+            .setMessage(if (voice.isReady())
+                "صدای فارسی شناسایی شده. اول گزینه آزمایش را بزن و صدای رسانه گوشی را زیاد کن."
+                else "موتور گفتار فارسی آماده نیست. این با مدل Vosk فرق دارد؛ برای پاسخ صوتی باید یک موتور TTS دارای زبان فارسی نصب و فعال باشد.")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> testPersianSpeech()
+                    1 -> refreshPersianSpeech()
+                    2 -> choosePersianVoice()
+                    3 -> chooseTtsEngine()
+                    4 -> openTtsSettings()
+                    5 -> safeLaunch(Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.tts")))
+                }
+            }.setNegativeButton("بستن", null).show()
+    }
+
+    private fun testPersianSpeech() {
+        if (!voice.isReady()) {
+            AlertDialog.Builder(this).setTitle("صدای فارسی هنوز آماده نیست")
+                .setMessage("از تنظیمات گفتار گوشی، موتور TTS دارای زبان فارسی را فعال کن و در صورت وجود، داده یا صدای فارسی آن را دانلود کن. سپس به دانا برگرد و «بررسی دوباره» را بزن. نصب Google TTS به‌تنهایی تضمین نمی‌کند که صدای فارسی در دستگاه موجود باشد.")
+                .setPositiveButton("تنظیمات گفتار") { _, _ -> openTtsSettings() }
+                .setNegativeButton("بستن", null).show()
             return
         }
-        val labels = options.map { (if (it.offline) "آفلاین • " else "اینترنتی • ") + it.description }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("انتخاب صدای دانا")
-            .setMessage("صدای زن طبیعی تضمین نمی‌شود؛ صدای نصب‌شده دلخواه را انتخاب و آزمایش کنید. صدای اینترنتی ممکن است متن را به سرویس گوشی بفرستد.")
+        val phrase = "سلام! من دانا هستم. از این به بعد جواب‌هام رو به فارسی می‌گم."
+        answer.text = "دانا: $phrase"
+        status.text = "در حال آزمایش صدای فارسی؛ صدای رسانه گوشی را بررسی کن."
+        voice.speak(phrase) {
+            status.text = if (voice.diagnostics().contains("TTS last playback: DONE"))
+                "آزمایش گفتار تمام شد؛ اگر صدایی نشنیدی، صدای رسانه یا خروجی بلوتوث را بررسی کن."
+            else "گفتار فارسی پخش نشد؛ از خطایابی وضعیت TTS را بررسی کن."
+        }
+    }
+
+    private fun refreshPersianSpeech() {
+        status.text = "در حال بررسی دوباره موتور صدای فارسی…"
+        voice.refresh()
+        notifyWakeTtsChanged()
+    }
+
+    private fun choosePersianVoice() {
+        val voices = voice.choices()
+        if (voices.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("صدای فارسی پیدا نشد")
+                .setMessage("موتور فعلی هیچ صدای فارسی معرفی نکرده است. ابتدا موتور یا داده فارسی را در تنظیمات گفتار گوشی نصب کن. بعضی موتورها زبان فارسی را پشتیبانی نمی‌کنند.")
+                .setPositiveButton("تنظیمات گفتار") { _, _ -> openTtsSettings() }
+                .setNegativeButton("بستن", null).show()
+            return
+        }
+        val labels = voices.map { (if (it.offline) "آفلاین • " else "نیازمند اینترنت • ") + it.description }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("انتخاب صدای فارسی")
             .setItems(labels) { _, i ->
-                if (voice.chooseVoice(options[i].id)) say("سلام ${friendlyName()}، این صدای جدید داناست.")
-                else say("این صدا روی گوشی قابل انتخاب نبود.")
+                val choice = voices[i]
+                if (!choice.offline && memory.privateMode) {
+                    AlertDialog.Builder(this).setTitle("حالت خصوصی فعال است")
+                        .setMessage("این صدا برای گفتار به اینترنت نیاز دارد و در حالت خصوصی مجاز نیست. یک صدای فارسی آفلاین انتخاب کن.")
+                        .setPositiveButton("متوجه شدم", null).show()
+                } else if (!choice.offline) {
+                    AlertDialog.Builder(this).setTitle("صدای نیازمند اینترنت")
+                        .setMessage("این موتور ممکن است متن پاسخ‌های دانا را برای تولید صدا به سرویس آنلاین خود بفرستد. اجازه می‌دهی؟")
+                        .setPositiveButton("اجازه می‌دهم") { _, _ -> applyPersianVoice(choice.id) }
+                        .setNegativeButton("انصراف", null).show()
+                } else applyPersianVoice(choice.id)
             }.setNegativeButton("بستن", null).show()
+    }
+
+    private fun applyPersianVoice(id: String) {
+        if (voice.chooseVoice(id)) {
+            notifyWakeTtsChanged()
+            testPersianSpeech()
+        } else status.text = "انتخاب این صدای فارسی موفق نبود."
+    }
+
+    private fun chooseTtsEngine() {
+        val engines = voice.engines()
+        if (engines.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("موتور گفتار پیدا نشد")
+                .setMessage("در تنظیمات تبدیل متن به گفتار گوشی یک موتور TTS نصب و فعال کن.")
+                .setPositiveButton("تنظیمات گفتار") { _, _ -> openTtsSettings() }
+                .setNegativeButton("بستن", null).show()
+            return
+        }
+        val labels = arrayOf("موتور پیش‌فرض سیستم") + engines.map { "${it.label} (${it.packageName})" }
+        AlertDialog.Builder(this).setTitle("انتخاب موتور صدای دانا")
+            .setMessage("فقط موتورهای نصب‌شده نمایش داده می‌شوند. بعد از انتخاب، زبان فارسی آن موتور را آزمایش کن.")
+            .setItems(labels) { _, i ->
+                if (i == 0) voice.useSystemEngine()
+                else if (!voice.chooseEngine(engines[i - 1].packageName)) {
+                    status.text = "انتخاب موتور گفتار موفق نبود."
+                    return@setItems
+                }
+                notifyWakeTtsChanged()
+                status.text = "موتور تغییر کرد؛ چند ثانیه بعد گزینه آزمایش صدای دانا را بزن."
+            }.setNegativeButton("بستن", null).show()
+    }
+
+    private fun openTtsSettings() {
+        awaitingTtsSettingsReturn = true
+        if (!safeLaunch(Intent("com.android.settings.TTS_SETTINGS"))) {
+            if (!safeLaunch(Intent(Settings.ACTION_SETTINGS))) {
+                awaitingTtsSettingsReturn = false
+                status.text = "تنظیمات گفتار باز نشد؛ در تنظیمات گوشی عبارت Text-to-speech را جست‌وجو کن."
+            }
+        }
+    }
+
+    private fun notifyWakeTtsChanged() {
+        if (DanaWakeService.running(this)) {
+            runCatching { startService(Intent(this, DanaWakeService::class.java)
+                .setAction(DanaWakeService.ACTION_TTS_CHANGED)) }
+        }
     }
 
     private fun confirmEraseAll() {
@@ -1185,6 +1318,10 @@ class MainActivity : Activity() {
             "پاسخ متنی: برای شنیدن صدا، صدای فارسی گوشی را فعال کن."
         voice.speak(text) {
             if (voice.isReady()) status.text = "آماده دریافت فرمان"
+            if (wakeUiHandoffPending) {
+                wakeUiHandoffPending = false
+                signalWakeUiFinished()
+            }
             if (afterSpeech != null) {
                 relistenAfterResponse = false
                 afterSpeech.invoke()
@@ -1204,9 +1341,19 @@ class MainActivity : Activity() {
         }
     }
 
-    /** پس از تمام شدن صدای دانا، فقط در صفحه باز و با مجوز قبلی دوباره گوش می‌دهد. */
+    /** Return microphone ownership to the wake service instead of starting a competing one-shot listener. */
+    private fun signalWakeUiFinished() {
+        if (DanaWakeService.running(this)) {
+            runCatching {
+                startService(Intent(this, DanaWakeService::class.java)
+                    .setAction(DanaWakeService.ACTION_UI_COMMAND_COMPLETE))
+            }
+        }
+    }
+
     private fun ask(text: String) = say(text) {
-        if (appVisible && checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+        if (DanaWakeService.running(this)) signalWakeUiFinished()
+        else if (appVisible && checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED) requestMicAndListen()
     }
 
@@ -1399,6 +1546,11 @@ class MainActivity : Activity() {
         super.onResume()
         appVisible = true
         visibleNow = true
+        visibleActivity = WeakReference(this)
+        if (awaitingTtsSettingsReturn && ::voice.isInitialized) {
+            awaitingTtsSettingsReturn = false
+            window.decorView.post { if (appVisible) refreshPersianSpeech() }
+        }
         if (::wakeButton.isInitialized) updateWakeButton()
         updateWakeProbeButton()
         // Android microphone foreground services must be started while the Activity is visible.
@@ -1429,6 +1581,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         appVisible = false
         visibleNow = false
+        if (visibleActivity?.get() === this) visibleActivity = null
         relistenAfterResponse = false
         speech.cancel() // میکروفون نباید هنگام باز شدن برنامه دیگر باقی بماند.
         offlineSpeech.releaseModel()

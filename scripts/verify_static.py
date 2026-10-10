@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.2-offline-commandfix-beta"' in app_gradle and 'versionCode = 21' in app_gradle
+assert 'versionName = "1.9.4-command-dispatch-diagnostics-beta"' in app_gradle and 'versionCode = 23' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.2-offline-commandfix-beta"' in app_gradle and 'versionCode = 21' in app_gradle
+assert 'versionName = "1.9.4-command-dispatch-diagnostics-beta"' in app_gradle and 'versionCode = 23' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -191,3 +191,27 @@ assert 'WakeSpeechProbe.capture(phrase)' in wake
 assert 'wakeProbeButton' in activity and 'WakeSpeechProbe.report()' in (pkg / 'DiagnosticReport.kt').read_text()
 assert 'WakeSpeechProbe.toggle()' in activity
 print('PASS: v1.9.2 buffered offline commands and opt-in transient transcription probe.')
+
+# v1.9.3 Persian speech output: engine selection, manual test and diagnostic state.
+voice_source = (pkg / 'DanaVoice.kt').read_text()
+activity_source = (pkg / 'MainActivity.kt').read_text()
+assert 'TextToSpeech(appContext, callback' in voice_source
+assert 'fun chooseEngine(' in voice_source and 'fun refresh()' in voice_source
+assert 'engine.setAudioAttributes(attributes)' in voice_source
+assert 'PERSIAN_NOT_SUPPORTED' in voice_source and 'SYNTHESIS_ERROR_' in voice_source
+assert 'testPersianSpeech()' in activity_source and 'openTtsSettings()' in activity_source
+assert 'ACTION_TTS_CHANGED' in (pkg / 'DanaWakeService.kt').read_text()
+assert 'voice.diagnostics()' in activity_source and 'append(ttsDetails)' in (pkg / 'DiagnosticReport.kt').read_text()
+print('PASS: v1.9.3 user-driven Persian TTS engine selection, test, wake reload and diagnostics.')
+
+# v1.9.4: parsed commands must reach visible UI or provide an actionable notification.
+assert (pkg / 'WakeExecutionMetrics.kt').is_file()
+assert 'MainActivity.dispatchWakeCommand(text)' in wake
+assert 'WakeDispatchPolicy.requiresVisibleUi(action)' in wake
+assert 'WakeExecutionMetrics.received(' in wake and 'WakeExecutionMetrics.outcome(' in wake
+assert 'ACTION_UI_COMMAND_COMPLETE' in wake and 'ACTION_UI_COMMAND_COMPLETE' in activity_source
+assert 'Notification.Builder(this, ACTION_CHANNEL)' in wake
+assert 'USER_TAP_REQUIRED' in wake and 'APP_LAUNCH_REQUESTED' in wake
+assert 'WakeExecutionMetrics.report()' in (pkg / 'DiagnosticReport.kt').read_text()
+assert 'private var visibleActivity: WeakReference<MainActivity>?' in activity_source
+print('PASS: v1.9.4 visible UI dispatch, actionable notifications, and execution diagnostics.')

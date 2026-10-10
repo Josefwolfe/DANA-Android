@@ -30,9 +30,12 @@ class DanaWakeService : Service() {
         const val ACTION_START = "com.dana.ai.START_WAKE"
         const val ACTION_STOP = "com.dana.ai.STOP_WAKE"
         const val ACTION_PRIVACY_CHANGED = "com.dana.ai.WAKE_PRIVACY_CHANGED"
+        const val ACTION_TTS_CHANGED = "com.dana.ai.WAKE_TTS_CHANGED"
+        const val ACTION_UI_COMMAND_COMPLETE = "com.dana.ai.WAKE_UI_COMMAND_COMPLETE"
         const val ACTION_OPEN_COMMAND = "com.dana.ai.OPEN_WAKE_COMMAND"
         const val EXTRA_COMMAND = "wake_command"
         const val CHANNEL = "dana_wake_experimental"
+        const val ACTION_CHANNEL = "dana_wake_action_results"
         const val NOTIFICATION_ID = 7120
         const val MODEL_DIR = "vosk_fa_small"
         @Volatile private var aliveInProcess = false
@@ -53,6 +56,12 @@ class DanaWakeService : Service() {
     private var voice: DanaVoice? = null
     private var commandSpeech: SpeechManager? = null
     private var stage = "init" // init, wake, reply, command_online, command_offline, paused, closed
+    private val uiHandoffTimeout = Runnable {
+        if (!stopped && stage == "ui_handoff") startWakeRecognition()
+    }
+    private val responseWatchdog = Runnable {
+        if (!stopped && stage == "reply") startWakeRecognition()
+    }
     private val onlineTimeout = Runnable {
         if (!stopped && stage == "command_online") startCommandRecognitionOffline()
     }
@@ -122,7 +131,11 @@ class DanaWakeService : Service() {
     override fun onCreate() {
         super.onCreate()
         val channel = NotificationChannel(CHANNEL, "بیدارباش آزمایشی دانا", NotificationManager.IMPORTANCE_LOW)
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).apply {
+            createNotificationChannel(channel)
+            createNotificationChannel(NotificationChannel(ACTION_CHANNEL,
+                "نتیجه فرمان‌های صوتی دانا", NotificationManager.IMPORTANCE_DEFAULT))
+        }
         // Called before expensive model initialization; Android requires prompt startForeground.
         val initial = notification("در حال آماده‌سازی بیدارباش آفلاین…")
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, initial,
@@ -176,7 +189,22 @@ class DanaWakeService : Service() {
             UserMemory(this).wakeAutoResume = false
             stopSelf(); return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_UI_COMMAND_COMPLETE) {
+            if (stage == "ui_handoff") {
+                main.removeCallbacks(uiHandoffTimeout)
+                main.postDelayed({ if (!stopped && stage == "ui_handoff") startWakeRecognition() }, 450L)
+            }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TTS_CHANGED) {
+            voice?.close()
+            voice = DanaVoice(this) { available ->
+                DiagnosticEvents.record(this, "WAKE_TTS_RELOADED", if (available) "READY" else "UNAVAILABLE")
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_PRIVACY_CHANGED) {
+            voice?.refresh() // Enforce local-only TTS when private mode changes.
             // Stop any potentially online Android recognition immediately when private mode
             // becomes active; the local Vosk wake service itself remains enabled.
             if (stage == "command_online" || stage == "command_offline") {
@@ -232,6 +260,8 @@ class DanaWakeService : Service() {
             stage = "paused"; return
         }
         main.removeCallbacks(finishCommandAfterSilence)
+        main.removeCallbacks(uiHandoffTimeout)
+        main.removeCallbacks(responseWatchdog)
         commandCollector.reset()
         closeRecognizer()
         try {
@@ -388,9 +418,23 @@ class DanaWakeService : Service() {
                 // Never parse a command from the restricted wake grammar.
                 main.postDelayed({
                     if (!stopped && stage == "awaiting_command") startCommandRecognition()
-                }, 450L)
+                }, 220L) // Short gap after 130 ms beep; avoid clipping the first spoken word.
             }
         }
+    }
+
+    /** UI-required actions are handled by the visible Activity without a second microphone tap.
+     * If the app is backgrounded Android may forbid launching UI; then we show a tap action. */
+    private fun routeToVisibleUi(text: String): Boolean {
+        if (!MainActivity.dispatchWakeCommand(text)) return false
+        stage = "ui_handoff"
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+        WakeExecutionMetrics.outcome("UI_ROUTED")
+        DiagnosticEvents.record(this, "WAKE_ACTION_ROUTED", "VISIBLE_UI")
+        updateNotification("فرمان به صفحه دانا ارسال شد؛ منتظر نتیجه هستم")
+        main.removeCallbacks(uiHandoffTimeout)
+        main.postDelayed(uiHandoffTimeout, 8_000L)
+        return true
     }
 
     private fun handleCommand(text: String, inferred: DanaAction? = null) {
@@ -398,6 +442,7 @@ class DanaWakeService : Service() {
         val action = inferred ?: CommandEngine.parse(text)
         DiagnosticEvents.record(this, if (action is DanaAction.Unknown) "WAKE_COMMAND_UNKNOWN" else "WAKE_COMMAND_PARSED",
             action.javaClass.simpleName.uppercase(Locale.ROOT))
+        WakeExecutionMetrics.received(action.javaClass.simpleName)
         if (action is DanaAction.Unknown) WakeSessionMetrics.unknownCommand()
         else WakeSessionMetrics.knownCommand()
         if (action is DanaAction.Unknown && inferred == null) {
@@ -427,6 +472,10 @@ class DanaWakeService : Service() {
             notifyForUser(text, "برای این فرمان ابتدا قفل گوشی را باز کن")
             return
         }
+        // These operations require an Activity (or explicit Android user confirmation).
+        // A visible DANA screen can execute them immediately, without pressing the mic.
+        if (WakeDispatchPolicy.requiresVisibleUi(action) && MainActivity.visibleNow &&
+            routeToVisibleUi(text)) return
         when (action) {
             is DanaAction.Answer -> reply(action.text)
             DanaAction.Greeting -> reply("سلام، گوش می‌دم. چه کاری داری؟")
@@ -583,11 +632,11 @@ class DanaWakeService : Service() {
                         runCatching { startActivity(app) }.isSuccess
                     } ?: false
                 } else DanaHandsFreeService.launchNamedApp(action.name)
-                if (launched) reply("${action.name} رو باز کردم.")
+                if (launched) reply("درخواست باز کردن ${action.name} ارسال شد.", "APP_LAUNCH_REQUESTED")
                 else notifyForUser(text,
-                    "برای باز کردن ${action.name} اعلان را لمس کن یا دسترسی اجرای صوتی را فعال کن")
+                    "باز کردن ${action.name} از پس‌زمینه مجاز نشد؛ برای اجرا این اعلان را لمس کن")
             }
-            is DanaAction.Unknown -> reply("این فرمان در موتور آفلاین دانا شناخته نمی‌شه. کوتاه‌تر بگو یا بگو راهنما.")
+            is DanaAction.Unknown -> reply("این فرمان در موتور آفلاین دانا شناخته نمی‌شه. کوتاه‌تر بگو یا بگو راهنما.", "UNSUPPORTED")
             else -> notifyForUser(text, "برای ادامه فرمان، اعلان دانا را لمس کن")
         }
     }
@@ -632,28 +681,62 @@ class DanaWakeService : Service() {
         }
     }
 
-    private fun reply(message: String) {
+    private fun reply(message: String, outcome: String = "RESPONSE_ONLY") {
         if (stopped) return
         stage = "reply"
+        WakeExecutionMetrics.outcome(outcome)
+        DiagnosticEvents.record(this, "WAKE_ACTION_RESULT", outcome)
+        MainActivity.showWakeFeedback(message)
         updateNotification(message)
-        if (voice?.isReady() != true) wakeAcknowledgement() // Audible acknowledgement without Persian TTS.
+        main.removeCallbacks(responseWatchdog)
+        main.postDelayed(responseWatchdog, if (voice?.isReady() == true) 50_000L else 15_000L)
+        if (voice?.isReady() != true) {
+            // A silent TTS engine must not make an otherwise parsed command look ignored.
+            val open = PendingIntent.getActivity(this, 39,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val result = Notification.Builder(this, ACTION_CHANNEL)
+                .setSmallIcon(R.drawable.ic_dana)
+                .setContentTitle("دانا: نتیجه فرمان صوتی")
+                .setContentText(message)
+                .setStyle(Notification.BigTextStyle().bigText(message))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7122, result)
+            wakeAcknowledgement()
+        }
         voice?.speak(message) { main.postDelayed({ startWakeRecognition() }, 300) }
             ?: main.postDelayed({ startWakeRecognition() }, 300)
     }
 
     private fun notifyForUser(text: String, message: String) {
         stage = "reply"
+        WakeExecutionMetrics.outcome("USER_TAP_REQUIRED")
+        DiagnosticEvents.record(this, "WAKE_ACTION_RESULT", "USER_TAP_REQUIRED")
+        MainActivity.showWakeFeedback(message)
         val pending = PendingIntent.getActivity(this, 37,
             Intent(this, MainActivity::class.java).apply {
                 action = ACTION_OPEN_COMMAND
                 putExtra(EXTRA_COMMAND, text)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val note = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_dana).setContentTitle("دانا: فرمان دریافت شد")
-            .setContentText(message).setContentIntent(pending).setAutoCancel(true).build()
+        val note = Notification.Builder(this, ACTION_CHANNEL)
+            .setSmallIcon(R.drawable.ic_dana).setContentTitle("دانا: برای اجرای فرمان لمس کن")
+            .setContentText(message).setStyle(Notification.BigTextStyle().bigText(message))
+            .setContentIntent(pending).setAutoCancel(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .build()
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7121, note)
-        reply("دستورت رو شنیدم. برای ادامه اعلان دانا رو لمس کن.")
+        // Do not misreport this as completed; keep the actionable notification visible.
+        updateNotification(message)
+        main.removeCallbacks(responseWatchdog)
+        main.postDelayed(responseWatchdog, if (voice?.isReady() == true) 50_000L else 15_000L)
+        if (voice?.isReady() != true) wakeAcknowledgement()
+        voice?.speak("برای انجام این فرمان، اعلان دانا را لمس کن") {
+            main.postDelayed({ startWakeRecognition() }, 300)
+        } ?: main.postDelayed({ startWakeRecognition() }, 300)
     }
 
     private fun notification(message: String): Notification {
