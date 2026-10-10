@@ -2,7 +2,7 @@ package com.dana.ai
 
 /** Pure Kotlin so speech-trigger decisions can be tested without an Android device. */
 object WakePhrase {
-    private val triggers = listOf("سلام دانا", "هی دانا")
+    private val triggers = listOf("سلام دانا", "هی دانا", "دانا")
 
     fun extractAfterWake(recognized: String): String? {
         val normalized = CommandEngine.normalize(recognized)

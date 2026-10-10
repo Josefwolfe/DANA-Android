@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.3.0-rc4"' in app_gradle and 'versionCode = 13' in app_gradle
+assert 'versionName = "1.5.0-beta"' in app_gradle and 'versionCode = 15' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.3.0-rc4"' in app_gradle and 'versionCode = 13' in app_gradle
+assert 'versionName = "1.5.0-beta"' in app_gradle and 'versionCode = 15' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity

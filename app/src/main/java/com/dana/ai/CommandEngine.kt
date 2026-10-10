@@ -7,6 +7,11 @@ sealed class DanaAction {
     object Greeting : DanaAction()
     object Time : DanaAction()
     object Battery : DanaAction()
+    object TodayDate : DanaAction()
+    object Help : DanaAction()
+    data class WebSearch(val query: String) : DanaAction()
+    data class YouTubeSearch(val query: String) : DanaAction()
+    data class Navigate(val destination: String) : DanaAction()
     object Camera : DanaAction()
     object Contacts : DanaAction()
     object Calendar : DanaAction()
@@ -17,6 +22,14 @@ sealed class DanaAction {
     data class Sms(val contact: String, val message: String?) : DanaAction()
     data class Settings(val section: String) : DanaAction()
     data class Media(val command: String) : DanaAction()
+    /** query == null: choose a random locally indexed music track. */
+    data class Music(val query: String?) : DanaAction()
+    /** Android 10+ generally requires user interaction to change radio state. */
+    data class Connectivity(val radio: String, val enabled: Boolean) : DanaAction()
+    data class DatedAlarm(val dayOffset: Int?, val weekday: Int?, val hour: Int,
+                          val minute: Int, val label: String?) : DanaAction()
+    data class PersianDateAlarm(val day: Int, val month: Int, val hour: Int,
+                                val minute: Int, val label: String?) : DanaAction()
     data class Alarm(val hour: Int, val minute: Int, val label: String?) : DanaAction()
     data class Timer(val minutes: Int, val label: String?) : DanaAction()
     data class NoteAdd(val text: String) : DanaAction()
@@ -59,6 +72,34 @@ object CommandEngine {
         }
     }
 
+    /** Common spoken Persian clock numbers; avoid changing «سه شنبه» into «3 شنبه». */
+    private fun spokenClockDigits(text: String): String {
+        val numbers = linkedMapOf("بیست و چهار" to "24", "بیست و سه" to "23",
+            "بیست و دو" to "22", "بیست و یک" to "21", "بیست" to "20",
+            "نوزده" to "19", "هجده" to "18", "هفده" to "17", "شانزده" to "16",
+            "پانزده" to "15", "چهارده" to "14", "سیزده" to "13", "دوازده" to "12",
+            "یازده" to "11", "ده" to "10", "نه" to "9", "هشت" to "8",
+            "هفت" to "7", "شش" to "6", "پنج" to "5", "چهار" to "4",
+            "سه" to "3", "دو" to "2", "یک" to "1", "صفر" to "0")
+        var result = text
+        for ((word, number) in numbers) {
+            val pattern = Regex("(?<!\\S)" + word + "(?!\\S|\\s+شنبه)")
+            result = result.replace(pattern, number)
+        }
+        return result.replace(Regex("(\\d{1,2}) و نیم"), "$1 30")
+            .replace(Regex("(\\d{1,2}) و ربع"), "$1 15")
+            .replace(Regex("(\\d{1,2}) و (\\d{1,2})"), "$1 $2")
+    }
+
+    private fun resolveHour(raw: Int?, daypart: String): Int? {
+        if (raw == null || raw !in 0..23) return null
+        return when {
+            daypart in setOf("عصر", "شب") && raw in 1..11 -> raw + 12
+            daypart in setOf("صبح", "شب") && raw == 12 -> 0
+            else -> raw
+        }
+    }
+
     private fun originalMessageBody(input: String): String? {
         val raw = input.trim().replace(Regex("^(?:سلام\\s+دانا|دانا)\\s*[,،]?\\s*"), "")
         val tokens = listOf(" پیام بفرست", " پیام بده", " اس ام اس بفرست", " بنویس", " خبر بده", " بگو", " بفرست")
@@ -84,6 +125,68 @@ object CommandEngine {
         if (s in setOf("یادگیری رو روشن کن", "حافظه یادگیری رو روشن کن")) return DanaAction.LearningMode(true)
         if (s in setOf("کوتاه جواب بده", "مختصر جواب بده", "خلاصه جواب بده")) return DanaAction.ResponseStyle("short")
         if (s in setOf("دوستانه جواب بده", "صمیمی جواب بده")) return DanaAction.ResponseStyle("friendly")
+
+        // Voice-first everyday requests, handled locally without an AI subscription.
+        if (s in setOf("امروز چندمه", "امروز چندم است", "تاریخ امروز", "امروز چه روزیه",
+                "امروز چه روزی است", "امروز چند شنبه است", "امروز چندشنبه است"))
+            return DanaAction.TodayDate
+        if (s in setOf("راهنما", "کمک", "چه کارهایی می تونی بکنی", "چه کارهایی میتونی بکنی",
+                "چه فرمان هایی بلدی", "چه فرمان هایی رو بلدی", "چه کارهایی بلدی"))
+            return DanaAction.Help
+        Regex("^(?:توی|در) یوتیوب (.+?) (?:رو|را) (?:پیدا کن|جستجو کن|سرچ کن)$")
+            .find(s)?.let { return DanaAction.YouTubeSearch(it.groupValues[1].trim()) }
+        Regex("^(?:ویدیو|فیلم) (.+?) (?:رو|را) (?:در|توی) یوتیوب (?:پیدا کن|جستجو کن)$")
+            .find(s)?.let { return DanaAction.YouTubeSearch(it.groupValues[1].trim()) }
+        Regex("^(?:مسیریابی|مسیر یابی) (?:به|تا|برای) (.+)$")
+            .find(s)?.let { return DanaAction.Navigate(it.groupValues[1].trim()) }
+        Regex("^مسیر (?:به|تا) (.+?) (?:رو|را) (?:نشون بده|نشان بده|باز کن)$")
+            .find(s)?.let { return DanaAction.Navigate(it.groupValues[1].trim()) }
+        Regex("^منو ببر (?:به|تا) (.+)$")
+            .find(s)?.let { return DanaAction.Navigate(it.groupValues[1].trim()) }
+        Regex("^(?:جستجو کن|جست و جو کن|سرچ کن|در اینترنت جستجو کن) (.+)$")
+            .find(s)?.let { return DanaAction.WebSearch(it.groupValues[1].trim()) }
+        Regex("^(?:توی|در) گوگل (.+?) (?:رو|را) (?:سرچ کن|جستجو کن)$")
+            .find(s)?.let { return DanaAction.WebSearch(it.groupValues[1].trim()) }
+
+        // Date-specific alarms: weekdays, tomorrow and Persian calendar dates.
+        // The Android Clock ACTION_SET_ALARM does not support an arbitrary date;
+        // these are handled by DANA's alarm-clock scheduler instead.
+        val alarmSource = spokenClockDigits(faDigitsToEn(s))
+        val weekdays = mapOf("شنبه" to java.util.Calendar.SATURDAY,
+            "یکشنبه" to java.util.Calendar.SUNDAY, "یک شنبه" to java.util.Calendar.SUNDAY,
+            "دوشنبه" to java.util.Calendar.MONDAY, "دو شنبه" to java.util.Calendar.MONDAY,
+            "سه شنبه" to java.util.Calendar.TUESDAY, "سهشنبه" to java.util.Calendar.TUESDAY,
+            "چهارشنبه" to java.util.Calendar.WEDNESDAY, "چهار شنبه" to java.util.Calendar.WEDNESDAY,
+            "پنجشنبه" to java.util.Calendar.THURSDAY, "پنج شنبه" to java.util.Calendar.THURSDAY,
+            "جمعه" to java.util.Calendar.FRIDAY)
+        val persianMonths = listOf("فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+            "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند")
+        val dateWord = "(امروز|فردا|پس فردا|پسفردا|شنبه|یکشنبه|یک شنبه|دوشنبه|دو شنبه|سه شنبه|سهشنبه|چهارشنبه|چهار شنبه|پنجشنبه|پنج شنبه|جمعه)"
+        val datePattern = Regex("^(?:برای )?" + dateWord + " (?:آلارم |زنگ هشدار )?(?:رو )?(?:برای )?(?:ساعت )?(\\d{1,2})(?:[: ](\\d{1,2}))? (?:(صبح|ظهر|عصر|شب) )?(?:آلارم |زنگ هشدار )?(?:رو )?(?:بیدارم کن|بذار|بزار|بگذار|تنظیم کن|فعال کن)(?: (.*))?$")
+        val dateMatch = datePattern.find(alarmSource)
+        if (dateMatch != null) {
+            val dayName = dateMatch.groupValues[1]
+            val h = resolveHour(dateMatch.groupValues[2].toIntOrNull(), dateMatch.groupValues[4])
+            val minute = dateMatch.groupValues[3].toIntOrNull() ?: 0
+            if (h != null && minute in 0..59) {
+                val offset = when (dayName) { "امروز" -> 0; "فردا" -> 1;
+                    "پس فردا", "پسفردا" -> 2; else -> null }
+                return DanaAction.DatedAlarm(offset, weekdays[dayName], h, minute,
+                    dateMatch.groupValues[5].trim().ifEmpty { null })
+            }
+        }
+        val persianDatePattern = Regex("^(?:برای )?(\\d{1,2}) (" + persianMonths.joinToString("|") +
+            ") (?:آلارم |زنگ هشدار )?(?:رو )?(?:برای )?(?:ساعت )?(\\d{1,2})(?:[: ](\\d{1,2}))? (?:(صبح|ظهر|عصر|شب) )?(?:آلارم |زنگ هشدار )?(?:رو )?(?:بیدارم کن|بذار|بزار|بگذار|تنظیم کن|فعال کن)(?: (.*))?$")
+        persianDatePattern.find(alarmSource)?.let { m ->
+            val day = m.groupValues[1].toIntOrNull()
+            val month = persianMonths.indexOf(m.groupValues[2]) + 1
+            val hour = resolveHour(m.groupValues[3].toIntOrNull(), m.groupValues[5])
+            val minute = m.groupValues[4].toIntOrNull() ?: 0
+            if (day != null && day in 1..31 && hour != null && minute in 0..59) {
+                return DanaAction.PersianDateAlarm(day, month, hour, minute,
+                    m.groupValues[6].trim().ifEmpty { null })
+            }
+        }
 
         // یادآوری داخل خود برنامه؛ برخلاف تایمر خارجی پس از بسته شدن برنامه هم اعلان دارد.
         if (s in setOf("یادآوری هام", "یادآوری ها", "یادآوری هامو بگو", "یادآوری های من", "یادآوری ها رو بگو")) return DanaAction.ReminderList
@@ -126,7 +229,7 @@ object CommandEngine {
         if (s in setOf("کار هام", "کارها", "کارهای من", "کارهای امروز", "تسک هام", "وظایف من")) return DanaAction.TaskList
 
         // تایمر نسبی: «۳۰ دقیقه دیگه یادم بنداز ...» یا «تایمر 10 دقیقه»
-        val timerSource = faDigitsToEn(s)
+        val timerSource = spokenClockDigits(faDigitsToEn(s))
         Regex("(?:تایمر|(?:(\\d+) دقیقه دیگه))(?: (\\d+) دقیقه)?(?:.*?(?:برای|که|یادم بنداز))?\\s*(.*)")
             .find(timerSource)?.let { m ->
                 val minutes = (m.groupValues[1].ifBlank { m.groupValues[2] }).toIntOrNull()
@@ -165,13 +268,53 @@ object CommandEngine {
         if ("باتری" in s && ("چنده" in s || "درصد" in s || "وضعیت" in s)) return DanaAction.Battery
         if ("تقویم" in s && listOf("باز", "اجرا", "بیار").any { it in s }) return DanaAction.Calendar
 
-        if (("موزیک" in s || "آهنگ" in s || "اهنگ" in s) && listOf("توقف", "مکث", "پاز").any { it in s }) return DanaAction.Media("pause")
-        if (("موزیک" in s || "آهنگ" in s || "اهنگ" in s) && listOf("پخش", "ادامه").any { it in s }) return DanaAction.Media("play")
-        if (("آهنگ بعدی" in s || "اهنگ بعدی" in s || "بعدی رو پخش" in s)) return DanaAction.Media("next")
-        if (("آهنگ قبلی" in s || "اهنگ قبلی" in s || "قبلی رو پخش" in s)) return DanaAction.Media("previous")
-
-        if ("تنظیمات" in s || (("وای فای" in s || "بلوتوث" in s) && listOf("روشن", "خاموش", "باز").any { it in s })) {
-            return DanaAction.Settings(when { "وای فای" in s -> "wifi"; "بلوتوث" in s -> "bluetooth"; else -> "general" })
+        // Music controls are checked before generic app launching. Context-free
+        // «عوض کن / ادامه بده» refer to the active player in hands-free mode.
+        val musicWord = "(?:موزیک|موسیقی|آهنگ|اهنگ|ترانه)"
+        if (s in setOf("استپ کن", "مکث کن", "پاز کن", "توقف کن", "متوقف کن") ||
+            (Regex(musicWord).containsMatchIn(s) &&
+                listOf("استپ", "مکث", "پاز", "متوقف", "توقف").any { it in s }))
+            return DanaAction.Media("pause")
+        if (s in setOf("موزیک رو قطع کن", "موسیقی رو قطع کن", "پخش رو قطع کن",
+                "پخش موسیقی رو قطع کن", "موزیک رو کامل قطع کن")) return DanaAction.Media("stop")
+        if (s in setOf("عوض کن", "عوضش کن", "بعدی", "آهنگ بعدی", "اهنگ بعدی",
+                "موزیک بعدی", "بعدی رو پخش کن") ||
+            (Regex(musicWord).containsMatchIn(s) && listOf("بعدی", "عوض").any { it in s }))
+            return DanaAction.Media("next")
+        if (s in setOf("قبلی", "قبلی رو پخش کن", "آهنگ قبلی", "اهنگ قبلی", "موزیک قبلی"))
+            return DanaAction.Media("previous")
+        if (s in setOf("ادامه بده", "پلی کن", "پخش رو ادامه بده", "موزیک رو ادامه بده",
+                "آهنگ رو ادامه بده", "موسیقی رو ادامه بده")) return DanaAction.Media("resume")
+        Regex("^(?:موزیک|آهنگ|اهنگ) (?:به اسم|با نام) (.+?) (?:رو |را )?(?:پخش کن|بذار|بزار|پیدا کن)$")
+            .find(s)?.let { return DanaAction.Music(it.groupValues[1].trim()) }
+        Regex("^" + musicWord + " (.+?) (?:رو |را )?(?:پخش کن|بذار|بزار|پیدا کن|اجرا کن)$")
+            .find(s)?.let { m ->
+                val query = m.groupValues[1].trim()
+                if (query !in setOf("رو", "را", "یه", "یک", "برام", "برای من", "رو برام"))
+                    return DanaAction.Music(query)
+            }
+        if (s in setOf("موزیک پخش کن", "یه موزیک پخش کن", "یک موزیک پخش کن",
+                "یه آهنگ پخش کن", "یک آهنگ پخش کن", "آهنگ پخش کن", "آهنگ بذار",
+                "موزیک بذار", "موزیک بزار", "یه موزیک بذار", "موسیقی پخش کن",
+                "برنامه موزیک رو فعال کن", "موزیک رو فعال کن", "موزیک رو باز کن",
+                "موزیک رو پخش کن", "آهنگ رو پخش کن", "پخش موسیقی"))
+            return DanaAction.Music(null)
+        Regex("^(.+?) (?:آهنگ|اهنگ|موزیک) (?:رو |را )?(?:پخش کن|بذار|بزار)$")
+            .find(s)?.let { return DanaAction.Music(it.groupValues[1].trim()) }
+        if (Regex(musicWord).containsMatchIn(s) && "ادامه" in s)
+            return DanaAction.Media("resume")
+        if ("وای فای" in s || "وایفای" in s || "wifi" in s || "بلوتوث" in s) {
+            val radio = if ("بلوتوث" in s) "bluetooth" else "wifi"
+            if (listOf("روشن", "فعال", "وصل", "خاموش", "غیرفعال", "قطع").any { it in s }) {
+                val enabled = listOf("روشن", "فعال", "وصل").any { it in s } &&
+                    listOf("خاموش", "غیرفعال", "قطع").none { it in s }
+                return DanaAction.Connectivity(radio, enabled)
+            }
+        }
+        if ("تنظیمات" in s || ("وای فای" in s && "باز" in s) ||
+            ("بلوتوث" in s && "باز" in s)) {
+            return DanaAction.Settings(when { "وای فای" in s -> "wifi";
+                "بلوتوث" in s -> "bluetooth"; else -> "general" })
         }
 
         val callPatterns = listOf(
@@ -188,6 +331,7 @@ object CommandEngine {
 
         val appPatterns = listOf(
             Regex("^(.+?) (?:رو|را) (?:باز کن|اجرا کن|بیار بالا|بیار)$"),
+            Regex("^(?:برنامه )?(.+?) (?:رو|را) (?:روشن کن|بالا بیار)$"),
             Regex("^(?:برو داخل|برنامه) (.+?)(?: رو باز کن)?$")
         )
         for (r in appPatterns) {

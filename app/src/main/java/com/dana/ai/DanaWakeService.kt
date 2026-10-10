@@ -8,6 +8,7 @@ import android.content.pm.ServiceInfo
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
+import android.view.KeyEvent
 import android.os.*
 import org.json.JSONObject
 import org.vosk.Model
@@ -42,7 +43,11 @@ class DanaWakeService : Service(), RecognitionListener {
     private var recognition: SpeechService? = null
     private var recognizer: Recognizer? = null
     private var voice: DanaVoice? = null
-    private var stage = "init" // init, wake, reply, command, paused, closed
+    private var commandSpeech: SpeechManager? = null
+    private var stage = "init" // init, wake, reply, command_online, command_offline, paused, closed
+    private val onlineTimeout = Runnable {
+        if (!stopped && stage == "command_online") startCommandRecognitionOffline()
+    }
     private var errors = 0
     private var stopped = false
     private val audio by lazy { getSystemService(AUDIO_SERVICE) as AudioManager }
@@ -77,7 +82,9 @@ class DanaWakeService : Service(), RecognitionListener {
         override fun run() {
             if (stopped) return
             if (audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION) {
-                if (stage == "wake" || stage == "command") {
+                if (stage == "wake" || stage == "command_offline" || stage == "command_online") {
+                    commandSpeech?.cancel()
+                    main.removeCallbacks(onlineTimeout)
                     closeRecognizer()
                     stage = "paused"
                     updateNotification("در تماس؛ میکروفون دانا آزاد شد")
@@ -121,13 +128,26 @@ class DanaWakeService : Service(), RecognitionListener {
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
             .putBoolean("running", true).remove("last_stop_reason").apply()
         aliveInProcess = true
-        voice = DanaVoice(this) { /* If TTS unavailable, status notification still works. */ }
+        voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
+        commandSpeech = SpeechManager(this,
+            onResult = { phrase -> main.post {
+                if (!stopped && stage == "command_online") {
+                    main.removeCallbacks(onlineTimeout)
+                    stage = "reply"
+                    handleCommand(phrase)
+                }
+            } },
+            onStatus = { message -> if (stage == "command_online") updateNotification(message) },
+            onError = { _ -> main.post {
+                if (!stopped && stage == "command_online") startCommandRecognitionOffline()
+            } })
         main.post(callCheck)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (stopped || !aliveInProcess) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP) {
+            UserMemory(this).wakeAutoResume = false
             stopSelf(); return START_NOT_STICKY
         }
         if (UserMemory(this).privateMode) {
@@ -170,23 +190,37 @@ class DanaWakeService : Service(), RecognitionListener {
         closeRecognizer()
         try {
             val recognizer = Recognizer(requireNotNull(model), 16000.0f,
-                "[\"سلام دانا\", \"هی دانا\", \"[unk]\"]")
+                """["دانا", "سلام دانا", "هی دانا", "دانا چراغ قوه رو روشن کن", "دانا چراغ قوه رو خاموش کن", "دانا ساعت چنده", "دانا باتری چند درصده", "دانا تلگرام رو باز کن", "دانا واتساپ رو باز کن", "دانا اینستاگرام رو باز کن", "دانا یوتیوب رو باز کن", "[unk]"]""")
             recognition = SpeechService(recognizer, 16000.0f).also { it.startListening(this) }
             this.recognizer = recognizer
             stage = "wake"
-            updateNotification("فعال: منتظر «سلام دانا» • لمس برای باز کردن")
+            updateNotification("فعال: منتظر «دانا» • برای توقف، اعلان را باز کن")
         } catch (_: Exception) { recoverOrStop() }
     }
 
+    /** Use the default Persian recognizer only after separate consent; otherwise Vosk. */
     private fun startCommandRecognition() {
         if (stopped) return
+        if (!UserMemory(this).privateMode && UserMemory(this).microphoneDisclosureAccepted) {
+            closeRecognizer()
+            stage = "command_online"
+            updateNotification("دانا در حال شنیدن فرمان فارسی است…")
+            main.postDelayed(onlineTimeout, 12_000L)
+            commandSpeech?.listen(allowOnline = true) ?: startCommandRecognitionOffline()
+        } else startCommandRecognitionOffline()
+    }
+
+    private fun startCommandRecognitionOffline() {
+        if (stopped) return
+        main.removeCallbacks(onlineTimeout)
+        stage = "command_offline" // Set before cancelling online recognition callbacks.
+        commandSpeech?.cancel()
         closeRecognizer()
         try {
-            val recognizer = Recognizer(requireNotNull(model), 16000.0f)
-            recognition = SpeechService(recognizer, 16000.0f).also { it.startListening(this, 8500) }
-            this.recognizer = recognizer
-            stage = "command"
-            updateNotification("دانا در حال دریافت دستور است…")
+            val next = Recognizer(requireNotNull(model), 16000.0f)
+            recognition = SpeechService(next, 16000.0f).also { it.startListening(this, 8500) }
+            recognizer = next
+            updateNotification("فرمان فارسی آفلاین را بگو…")
         } catch (_: Exception) { recoverOrStop() }
     }
 
@@ -211,7 +245,7 @@ class DanaWakeService : Service(), RecognitionListener {
                         ?: startCommandRecognition()
                 }
             }
-            "command" -> {
+            "command_offline" -> {
                 closeRecognizer()
                 stage = "reply"
                 handleCommand(text)
@@ -220,15 +254,21 @@ class DanaWakeService : Service(), RecognitionListener {
     }
     override fun onPartialResult(hypothesis: String?) {} // Never act on incomplete phrases.
     override fun onFinalResult(hypothesis: String?) { onResult(hypothesis) }
-    override fun onTimeout() { main.post { if (!stopped && stage == "command") startWakeRecognition() } }
-    override fun onError(e: Exception?) { main.post { recoverOrStop() } }
+    override fun onTimeout() { main.post {
+        if (!stopped && stage == "command_offline") startWakeRecognition()
+    } }
+    override fun onError(e: Exception?) { main.post {
+        if (!stopped && (stage == "wake" || stage == "command_offline")) recoverOrStop()
+    } }
 
     private fun handleCommand(text: String) {
         if (stopped) return
-        // Lock-screen-safe actions only; anything revealing data or starting a call requires a tap/unlock.
         val action = CommandEngine.parse(text)
-        if (!SafetyPolicy.permittedWithLockedScreen(action)) {
-            notifyForUser(text, "برای ادامه دستور، قفل گوشی را باز کن و اعلان را لمس کن")
+        val keyguard = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+        val locked = keyguard.isDeviceLocked || keyguard.isKeyguardLocked
+        // Lock-screen actions that expose information or launch other apps need unlocking.
+        if (locked && !SafetyPolicy.permittedWithLockedScreen(action)) {
+            notifyForUser(text, "برای این فرمان ابتدا قفل گوشی را باز کن")
             return
         }
         when (action) {
@@ -253,13 +293,111 @@ class DanaWakeService : Service(), RecognitionListener {
                         "کنترل چراغ ممکن نبود؛ گوشی را باز کن.")
                 }
             }
-            else -> notifyForUser(text, "برای ادامه دستور، قفل گوشی را باز کن و اعلان را لمس کن")
+            is DanaAction.Volume -> {
+                val ok = runCatching {
+                    audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                        if (action.direction < 0) AudioManager.ADJUST_LOWER else AudioManager.ADJUST_RAISE, 0)
+                }.isSuccess
+                reply(if (ok) "صدای گوشی تنظیم شد." else "تغییر صدا ممکن نبود.")
+            }
+            is DanaAction.Music -> {
+                if (!DanaMusicService.hasMusicPermission(this)) {
+                    notifyForUser(text, "برای پخش موسیقی ابتدا دسترسی فایل‌های صوتی را در دانا فعال کن")
+                } else {
+                    val command = if (action.query.isNullOrBlank()) DanaMusicService.PLAY_RANDOM
+                        else DanaMusicService.PLAY_NAMED
+                    val accepted = DanaMusicService.command(this, command, action.query)
+                    reply(if (accepted) "دارم موسیقی رو در حافظه جست‌وجو می‌کنم."
+                        else "اجرای پخش موسیقی از پس‌زمینه ممکن نشد؛ دانا رو باز کن.")
+                }
+            }
+            is DanaAction.Media -> {
+                val local = when (action.command) {
+                    "play", "resume" -> DanaMusicService.RESUME
+                    "pause" -> DanaMusicService.PAUSE
+                    "next" -> DanaMusicService.NEXT
+                    "previous" -> DanaMusicService.PREVIOUS
+                    "stop" -> DanaMusicService.STOP
+                    else -> DanaMusicService.PAUSE
+                }
+                if (DanaMusicService.running && DanaMusicService.command(this, local)) {
+                    reply("فرمان کنترل موسیقی ارسال شد.")
+                } else {
+                    val code = when (action.command) {
+                        "play", "resume" -> KeyEvent.KEYCODE_MEDIA_PLAY
+                        "pause", "stop" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+                        "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
+                        "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                        else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                    }
+                    val ok = runCatching {
+                        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+                    }.isSuccess
+                    reply(if (ok) "فرمان به برنامه موسیقی ارسال شد."
+                        else "کنترل موسیقی ممکن نبود.")
+                }
+            }
+            is DanaAction.Connectivity -> notifyForUser(text,
+                "برای تغییر ${if (action.radio == "wifi") "وای‌فای" else "بلوتوث"} پنل تنظیمات رو باز و تغییر رو تأیید کن")
+            is DanaAction.Alarm -> {
+                val now = System.currentTimeMillis()
+                val at = DatedAlarmTime.nextDay(now, 0, action.hour, action.minute)
+                    ?: DatedAlarmTime.nextDay(now, 1, action.hour, action.minute)
+                scheduleFromWake(at, action.label, text)
+            }
+            is DanaAction.DatedAlarm -> {
+                val now = System.currentTimeMillis()
+                val at = if (action.dayOffset != null)
+                    DatedAlarmTime.nextDay(now, action.dayOffset, action.hour, action.minute)
+                else action.weekday?.let { DatedAlarmTime.nextWeekday(now, it, action.hour, action.minute) }
+                scheduleFromWake(at, action.label, text)
+            }
+            is DanaAction.PersianDateAlarm -> {
+                val at = DatedAlarmTime.nextPersianDate(System.currentTimeMillis(),
+                    action.month, action.day, action.hour, action.minute)
+                scheduleFromWake(at, action.label, text)
+            }
+
+            is DanaAction.App -> {
+                // Android restricts background activity launches. An optional, user-enabled
+                // system-bound accessibility service can start the named app without reading
+                // screen content. Otherwise ask the user to tap the notification.
+                val launched = if (MainActivity.visibleNow) {
+                    AppLauncher.resolve(this, action.name)?.let { app ->
+                        runCatching { startActivity(app) }.isSuccess
+                    } ?: false
+                } else DanaHandsFreeService.launchNamedApp(action.name)
+                if (launched) reply("${action.name} رو باز کردم.")
+                else notifyForUser(text,
+                    "برای باز کردن ${action.name} اعلان را لمس کن یا دسترسی اجرای صوتی را فعال کن")
+            }
+            is DanaAction.Unknown -> reply("این فرمان رو متوجه نشدم؛ دوباره بگو.")
+            else -> notifyForUser(text, "برای ادامه فرمان، اعلان دانا را لمس کن")
+        }
+    }
+
+    private fun scheduleFromWake(at: Long?, label: String?, original: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifyForUser(original, "برای آلارم تاریخ‌دار، اجازه اعلان‌های دانا را فعال کن")
+            return
+        }
+        if (at == null) { reply("این زمان گذشته یا تاریخ معتبر نیست."); return }
+        val saved = runCatching { DatedAlarmScheduler(this).schedule(at, label) }.getOrNull()
+        if (saved == null) reply("ثبت آلارم ممکن نشد؛ برنامه را باز و تنظیمات آلارم را بررسی کن.")
+        else {
+            val whenText = android.icu.text.SimpleDateFormat("EEEE d MMMM ساعت HH:mm",
+                android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(at))
+            reply(if (saved.exact) "آلارم دقیق برای $whenText ثبت شد."
+                else "آلارم برای $whenText ثبت شد، اما بدون مجوز آلارم دقیق ممکنه با تأخیر اجرا بشه.")
         }
     }
 
     private fun reply(message: String) {
         if (stopped) return
         stage = "reply"
+        updateNotification(message)
         voice?.speak(message) { main.postDelayed({ startWakeRecognition() }, 300) }
             ?: main.postDelayed({ startWakeRecognition() }, 300)
     }
@@ -316,6 +454,7 @@ class DanaWakeService : Service(), RecognitionListener {
             powerReceiverRegistered = false
         }
         main.removeCallbacksAndMessages(null)
+        commandSpeech?.close(); commandSpeech = null
         closeRecognizer(); model?.close(); model = null
         voice?.close(); voice = null
         worker.shutdownNow()

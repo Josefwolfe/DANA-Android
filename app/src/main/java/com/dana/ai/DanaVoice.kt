@@ -29,6 +29,9 @@ class DanaVoice(context: Context, private val onAvailability: (Boolean) -> Unit)
         return true
     }
 
+    /** False means this phone's selected TTS engine cannot speak Persian yet. */
+    fun isReady(): Boolean = initialized && ready
+
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         .setAudioAttributes(AudioAttributes.Builder()
@@ -56,20 +59,22 @@ class DanaVoice(context: Context, private val onAvailability: (Boolean) -> Unit)
             main.post {
                 val engine = tts
                 val result = if (status == TextToSpeech.SUCCESS && engine != null)
-                    engine.setLanguage(Locale("fa", "IR")) else TextToSpeech.LANG_NOT_SUPPORTED
+                    engine.setLanguage(Locale.forLanguageTag("fa-IR")) else TextToSpeech.LANG_NOT_SUPPORTED
                 ready = result != TextToSpeech.LANG_NOT_SUPPORTED && result != TextToSpeech.LANG_MISSING_DATA
+                // Some engines report fa-IR as missing but provide a Persian network voice.
+                // Only use a voice that explicitly advertises Persian; never speak Persian
+                // with an unrelated English voice and call it successful.
+                val persianVoices = try { engine?.voices?.filter { it.locale.language == "fa" }.orEmpty() }
+                    catch (_: Exception) { emptyList() }
+                val saved = prefs.getString("voice_name", null)
+                val preferred = persianVoices.firstOrNull { it.name == saved }
+                    ?: persianVoices.firstOrNull { !it.isNetworkConnectionRequired &&
+                        (it.name.contains("female", true) || it.name.contains("woman", true)) }
+                    ?: persianVoices.firstOrNull { !it.isNetworkConnectionRequired }
+                    ?: persianVoices.firstOrNull()
+                if (preferred != null && engine?.setVoice(preferred) == TextToSpeech.SUCCESS) ready = true
                 initialized = true
                 if (ready) {
-                    val localVoices = try {
-                        engine?.voices?.filter { it.locale.language == "fa" && !it.isNetworkConnectionRequired }
-                    } catch (ignored: Exception) { null }
-                    val saved = prefs.getString("voice_name", null)
-                    val preferred = try { engine?.voices?.firstOrNull { it.name == saved && it.locale.language == "fa" } }
-                        catch (_: Exception) { null }
-                        ?: localVoices?.firstOrNull {
-                            it.name.contains("female", true) || it.name.contains("woman", true)
-                        } ?: localVoices?.firstOrNull()
-                    if (preferred != null) engine?.voice = preferred
                     engine?.setSpeechRate(0.94f)
                     engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {}

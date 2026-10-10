@@ -3,7 +3,7 @@ package com.dana.ai
 /** Pure decision rules; never treat an explicitly negated instruction as permission to act. */
 object SafetyPolicy {
     private val prohibitions = Regex(
-        "(?:^|\\s)(?:نکن|نکنید|نزن|نزنید|نگیر|نگیرید|نفرست|نفرستید|نذار|نگذار|نگذارید|نبند|اجرا نکن|باز نکن)(?:$|\\s)"
+        "(?:^|\\s)(?:نکن|نکنید|نزن|نزنید|نگیر|نگیرید|نفرست|نفرستید|نذار|نگذار|نگذارید|نبند|اجرا نکن|باز نکن|انجام نده|سرچ نکن|جستجو نکن|پیدا نکن|نرو)(?:$|\\s)"
     )
     private val optOut = Regex("(?:^|\\s)(?:نمی\\s*خوام|نمی\\s*خواهم|منصرف شدم)(?:$|\\s)")
 
@@ -23,7 +23,10 @@ object SafetyPolicy {
 
     /** Wake service never performs operations that reveal private data or contact another person. */
     fun permittedWithLockedScreen(action: DanaAction): Boolean =
-        action is DanaAction.Time || action is DanaAction.Battery || action is DanaAction.Flashlight
+        action is DanaAction.Time || action is DanaAction.Battery || action is DanaAction.Flashlight ||
+            action is DanaAction.Media || action is DanaAction.Music ||
+            action is DanaAction.Alarm || action is DanaAction.DatedAlarm ||
+            action is DanaAction.PersianDateAlarm
 
     fun alwaysAskBeforeExecution(action: DanaAction): Boolean =
         action is DanaAction.Call || action is DanaAction.Sms

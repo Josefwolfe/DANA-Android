@@ -39,6 +39,10 @@
             android:textSize="21sp" android:textStyle="bold" android:layout_marginTop="24dp"
             android:background="@drawable/bg_button" android:backgroundTint="@null"
             android:textColor="@color/bg" />
+        <Button android:id="@+id/conversationModeButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="🎧 مکالمه صوتی پیوسته: خاموش" />
+        <Button android:id="@+id/voiceSettingsButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="🔊 انتخاب و تنظیم صدای فارسی" />
         <EditText android:id="@+id/commandInput" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:layout_marginTop="12dp"
             android:hint="یا فرمان را اینجا تایپ کن (برای تست بدون میکروفون)"

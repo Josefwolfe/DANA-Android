@@ -31,6 +31,10 @@ import java.util.Locale
 
 /** DANA Alpha: اجرای سبک، بدون ضبط دائمی یا دسترسی مخفی. */
 class MainActivity : Activity() {
+    companion object {
+        @Volatile var visibleNow: Boolean = false
+            private set
+    }
     private enum class DialogState { COMMAND, NAME, PICK_CONTACT, ALIAS_NAME, ALIAS_CONFIRM, SMS_TEXT, CONFIRM_CALL, CONFIRM_SMS }
     private enum class ContactPurpose { CALL, SMS }
     private var state = DialogState.COMMAND
@@ -46,6 +50,8 @@ class MainActivity : Activity() {
     private var torchEnabled = false
     private var appVisible = false
     private var aiRequestActive = false
+    private var relistenAfterResponse = false
+    private lateinit var conversationButton: Button
     private lateinit var wakeButton: Button
 
     private lateinit var memory: UserMemory
@@ -89,14 +95,35 @@ class MainActivity : Activity() {
         drivingButton = findViewById(R.id.drivingButton)
         restButton = findViewById(R.id.sleepButton)
         refreshUserUI()
+        conversationButton = findViewById(R.id.conversationModeButton)
+        updateConversationButton()
+        conversationButton.setOnClickListener {
+            memory.conversationMode = !memory.conversationMode
+            relistenAfterResponse = false
+            updateConversationButton()
+            if (memory.conversationMode && !voice.isReady()) {
+                say("حالت مکالمه فعال شد، اما برای پاسخ صوتی اول باید صدای فارسی گوشی را نصب کنی.")
+            } else {
+                say(if (memory.conversationMode)
+                    "مکالمه صوتی فعال شد. بعد از پاسخ، تا وقتی دانا باز باشد دوباره گوش می‌دهم."
+                    else "مکالمه پیوسته خاموش شد. برای فرمان بعدی دکمه میکروفون را بزن.")
+            }
+        }
+        findViewById<Button>(R.id.voiceSettingsButton).setOnClickListener { showPersianVoices() }
 
         speech = SpeechManager(this,
             onResult = { phrase -> runOnUiThread { receiveSpeech(phrase) } },
             onStatus = { value -> runOnUiThread { status.text = value } },
-            onError = { error -> runOnUiThread { status.text = error; answer.text = error } })
+            onError = { error -> runOnUiThread {
+                relistenAfterResponse = false // Never loop on a recognition error.
+                status.text = error
+                answer.text = "دانا: $error"
+                if (::voice.isInitialized && voice.isReady()) voice.speak(error)
+            } })
         voice = DanaVoice(this) { available ->
             if (!available) {
-                status.text = "صدای فارسی نصب نشده؛ کنترل متنی و دکمه‌ها فعال هستند."
+                status.text = "پاسخ صوتی غیرفعال: صدای فارسی موتور گفتار نصب نیست. دکمه تنظیم صدای فارسی را بزن."
+                answer.text = "دانا: برای شنیدن جواب‌ها باید صدای فارسی گوشی را فعال کنی."
             } else if (memory.name.isNullOrBlank()) {
                 say("سلام! من دانا هستم. دوست داری چه اسمی صدات کنم؟")
             } else {
@@ -177,6 +204,11 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateConversationButton() {
+        if (::conversationButton.isInitialized) conversationButton.text =
+            if (memory.conversationMode) "🎧 مکالمه صوتی پیوسته: روشن" else "🎧 مکالمه صوتی پیوسته: خاموش"
+    }
+
     private fun refreshModes() {
         findViewById<TextView>(R.id.privacyStatus).text =
             if (memory.privateMode) "حالت خصوصی: روشن • گزارش و یادگیری غیرفعال" else
@@ -228,7 +260,7 @@ class MainActivity : Activity() {
         // Never let Android SpeechRecognizer and Vosk capture the microphone simultaneously.
         if (DanaWakeService.running(this)) {
             stopWakeService()
-            status.text = "بیدارباش موقتاً متوقف شد؛ بعد از فرمان می‌توانی دوباره آن را فعال کنی."
+            status.text = "بیدارباش متوقف شد؛ برای فعال‌سازی مجدد، حالت «دانا» را روشن کن."
             window.decorView.postDelayed({ if (appVisible) requestMicAndListen() }, 650L)
             return
         }
@@ -257,10 +289,15 @@ class MainActivity : Activity() {
                     selectedContact?.let { openDialer(it) }
                 } else say("بدون مجوز مخاطبین نمی تونم اسم ها رو جستجو کنم.")
             }
-            405, 406 -> {
+            405, 406, 410 -> {
                 val next = queuedPermissionAction
                 queuedPermissionAction = null
                 if (granted) next?.invoke() else say("برای این قابلیت اجازه اعلان لازم است.")
+            }
+            409 -> {
+                val next = queuedPermissionAction
+                queuedPermissionAction = null
+                if (granted) next?.invoke() else say("برای جست‌وجو و پخش آهنگ‌های حافظه، اجازه دسترسی به موسیقی را فعال کن.")
             }
             404 -> {
                 val next = queuedPermissionAction
@@ -279,6 +316,7 @@ class MainActivity : Activity() {
     }
 
     private fun receiveSpeech(phrase: String) {
+        relistenAfterResponse = memory.conversationMode && state == DialogState.COMMAND
         heard.text = "شنیدم: $phrase"
         status.text = "در حال پردازش…"
         val normalized = CommandEngine.normalize(phrase)
@@ -402,6 +440,34 @@ class MainActivity : Activity() {
                     if (!safeLaunch(i)) safeLaunch(Intent(Intent.ACTION_VIEW, CalendarContract.CONTENT_URI))
                 }
                 DanaAction.Battery -> reportBattery()
+                DanaAction.TodayDate -> {
+                    val date = try {
+                        android.icu.text.SimpleDateFormat("EEEE d MMMM yyyy",
+                            android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date())
+                    } catch (_: Exception) {
+                        SimpleDateFormat("EEEE d MMMM yyyy", Locale("fa", "IR")).format(Date())
+                    }
+                    say("امروز $date است.")
+                }
+                DanaAction.Help -> say("می‌توانم ساعت، تاریخ و باتری را بگویم، برنامه‌ها را باز کنم، " +
+                    "چراغ قوه و صدا را کنترل کنم، تماس و پیش‌نویس پیام آماده کنم، " +
+                    "یادآوری و تایمر بسازم، در وب و یوتیوب جستجو کنم و مسیریابی را باز کنم.")
+                is DanaAction.WebSearch -> {
+                    if (safeLaunch(Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://www.google.com/search?q=${Uri.encode(action.query)}"))))
+                        say("نتیجه‌های جستجو را در مرورگر باز کردم.")
+                }
+                is DanaAction.YouTubeSearch -> {
+                    if (safeLaunch(Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(action.query)}"))))
+                        say("نتیجه‌های یوتیوب را باز کردم.")
+                }
+                is DanaAction.Navigate -> {
+                    val location = Uri.encode(action.destination)
+                    val maps = Intent(Intent.ACTION_VIEW,
+                        Uri.parse("geo:0,0?q=$location"))
+                    if (safeLaunch(maps)) say("مقصد را در نقشه باز کردم؛ مسیر را تأیید کن.")
+                }
                 is DanaAction.App -> openApp(action.name)
                 is DanaAction.Flashlight -> askPermission(Manifest.permission.CAMERA, 404) { setTorch(action.enabled) }
                 is DanaAction.Volume -> changeVolume(action.direction)
@@ -416,6 +482,24 @@ class MainActivity : Activity() {
                     if (safeLaunch(i)) say("صفحه تنظیمات مربوط باز شد؛ تغییر تنظیمات رو خودت تأیید کن.")
                 }
                 is DanaAction.Media -> controlMedia(action.command)
+                is DanaAction.Music -> playLocalMusic(action.query)
+                is DanaAction.Connectivity -> openRadioPanel(action.radio, action.enabled)
+                is DanaAction.DatedAlarm -> {
+                    val now = System.currentTimeMillis()
+                    val at = if (action.dayOffset != null)
+                        DatedAlarmTime.nextDay(now, action.dayOffset, action.hour, action.minute)
+                    else action.weekday?.let {
+                        DatedAlarmTime.nextWeekday(now, it, action.hour, action.minute)
+                    }
+                    if (at == null) say("این ساعت گذشته یا تاریخ معتبر نیست؛ زمان دیگری بگو.")
+                    else scheduleDatedAlarm(at, action.label)
+                }
+                is DanaAction.PersianDateAlarm -> {
+                    val at = DatedAlarmTime.nextPersianDate(System.currentTimeMillis(),
+                        action.month, action.day, action.hour, action.minute)
+                    if (at == null) say("این تاریخ در تقویم معتبر نیست.")
+                    else scheduleDatedAlarm(at, action.label)
+                }
                 is DanaAction.Alarm -> setAlarm(action.hour, action.minute, action.label)
                 is DanaAction.Timer -> setTimer(action.minutes, action.label)
                 is DanaAction.NoteAdd -> {
@@ -527,11 +611,12 @@ class MainActivity : Activity() {
     private fun updateWakeButton() {
         if (::wakeButton.isInitialized) {
             wakeButton.text = if (DanaWakeService.running(this))
-                "توقف بیدارباش آزمایشی" else "فعال‌سازی آزمایشی «سلام دانا»"
+                "🟢 توقف شنود «دانا»" else "🎙 فعال‌سازی بیدارباش «دانا»"
         }
     }
 
     private fun stopWakeService() {
+        memory.wakeAutoResume = false
         stopService(Intent(this, DanaWakeService::class.java))
         // The service itself clears its running flag in onDestroy.
         window.decorView.postDelayed({ updateWakeButton() }, 250)
@@ -549,6 +634,9 @@ class MainActivity : Activity() {
                     type = "application/zip"
                 }
                 startActivityForResult(choose, 709)
+            }.setNeutralButton("صفحه رسمی مدل‌ها") { _, _ ->
+                safeLaunch(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://alphacephei.com/vosk/models")))
             }.setNegativeButton("انصراف", null).show()
     }
 
@@ -563,14 +651,28 @@ class MainActivity : Activity() {
             say("اول مدل کوچک فارسی را از فایل ZIP نصب کن."); return
         }
         AlertDialog.Builder(this)
-            .setTitle("فعال‌سازی آزمایشی بیدارباش")
-            .setMessage("تا وقتی این حالت فعال باشد، دانا از میکروفون و حدود صدها مگابایت حافظه برای مدل فارسی استفاده می‌کند؛ باتری ممکن است بیشتر مصرف شود. با صفحه خاموش و در برخی گوشی‌ها، سیستم می‌تواند شنود را متوقف کند. در اعلان دائم، دکمه توقف وجود دارد. این حالت پس از روشن شدن مجدد گوشی خودکار شروع نمی‌شود.")
+            .setTitle("فعال‌سازی بیدارباش بدون دکمه")
+            .setMessage("یک‌بار این حالت را روشن کن؛ بعد با گفتن «دانا» یا «سلام دانا» فرمان بده. میکروفون در سرویس پیش‌زمینه با اعلان دائمی فعال می‌ماند و مصرف باتری افزایش می‌یابد. اگر HyperOS سرویس را ببندد، شنود قطع می‌شود. هنگام باز کردن دوباره دانا، در صورت داشتن مجوز، حالت شنود از سر گرفته می‌شود؛ پس از بوت، شروع میکروفون در پس‌زمینه مجاز نیست. برای تشخیص دقیق‌تر فرمان‌ها، اجازه پردازش آنلاین را جداگانه تأیید کن.")
             .setNegativeButton("انصراف", null)
             .setPositiveButton("فعال کن") { _, _ ->
-                val run = { askPermission(Manifest.permission.RECORD_AUDIO, 407) { startWakeService() } }
-                if (Build.VERSION.SDK_INT >= 33)
-                    askPermission(Manifest.permission.POST_NOTIFICATIONS, 408, run)
-                else run()
+                val run = {
+                    val afterNotification = {
+                        askPermission(Manifest.permission.RECORD_AUDIO, 407) { startWakeService() }
+                    }
+                    if (Build.VERSION.SDK_INT >= 33)
+                        askPermission(Manifest.permission.POST_NOTIFICATIONS, 408, afterNotification)
+                    else afterNotification()
+                }
+                if (!memory.microphoneDisclosureAccepted) {
+                    AlertDialog.Builder(this).setTitle("تشخیص فرمان پس از «دانا»")
+                        .setMessage("برای فهم بهتر فارسی می‌توان از موتور تشخیص گفتار گوشی استفاده کرد که ممکن است صدا را به سرویس ارائه‌دهنده بفرستد. خود کلمه بیدارباش با مدل آفلاین تشخیص داده می‌شود. کدام حالت را انتخاب می‌کنی؟")
+                        .setPositiveButton("اجازه تشخیص آنلاین") { _, _ ->
+                            memory.microphoneDisclosureAccepted = true
+                            run()
+                        }
+                        .setNeutralButton("فقط آفلاین") { _, _ -> run() }
+                        .setNegativeButton("انصراف", null).show()
+                } else run()
             }.show()
     }
 
@@ -579,9 +681,11 @@ class MainActivity : Activity() {
             val request = Intent(this, DanaWakeService::class.java).setAction(DanaWakeService.ACTION_START)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(request)
             else startService(request)
+            memory.wakeAutoResume = true
             status.text = "در حال بارگذاری مدل فارسی… وضعیت را در اعلان دانا ببین."
             window.decorView.postDelayed({ updateWakeButton() }, 700)
         } catch (_: RuntimeException) {
+            memory.wakeAutoResume = false
             // Android 12+ and some OEMs can reject foreground microphone startup.
             say("سیستم اجازه شروع بیدارباش نداد؛ برنامه باید باز باشد و مجوز میکروفون فعال باشد.")
             updateWakeButton()
@@ -671,7 +775,8 @@ class MainActivity : Activity() {
         val learning = if (memory.learningEnabled) "خاموش کردن یادگیری مخاطب" else "روشن کردن یادگیری مخاطب"
         val style = if (memory.responseStyle == "short") "پاسخ دوستانه" else "پاسخ کوتاه"
         val choices = arrayOf(privacy, learning, style,
-            "نمایش وضعیت حافظه", "حذف تمام اطلاعات و یادآوری ها", "انتخاب و تست صدای فارسی")
+            "نمایش وضعیت حافظه", "حذف تمام اطلاعات و یادآوری ها", "انتخاب و تست صدای فارسی",
+            "اجازه اجرای صوتی برنامه‌ها در پس‌زمینه")
         AlertDialog.Builder(this).setTitle("تنظیمات شخصی دانا")
             .setItems(choices) { _, which ->
                 when (which) {
@@ -686,8 +791,19 @@ class MainActivity : Activity() {
                         .setPositiveButton("بستن", null).show()
                     4 -> confirmEraseAll()
                     5 -> showPersianVoices()
+                    6 -> showHandsFreePermission()
                 }
             }.setNegativeButton("انصراف", null).show()
+    }
+
+    private fun showHandsFreePermission() {
+        AlertDialog.Builder(this)
+            .setTitle("اجرای برنامه‌ها با صدای دانا")
+            .setMessage("برای باز کردن برنامه‌هایی مثل تلگرام با فرمان صوتی وقتی دانا در پس‌زمینه است، می‌توانی سرویس دسترس‌پذیری اختیاری دانا را فعال کنی. این سرویس محتوای صفحه را نمی‌خواند، کلیک خودکار انجام نمی‌دهد و فقط برای باز کردن برنامه‌ای که خودت نام برده‌ای استفاده می‌شود. هنگام قفل بودن گوشی باید قفل را باز کنی. این دسترسی را هر زمان خواستی از تنظیمات خاموش کن. روی بعضی گوشی‌های شیائومی باید ابتدا در تنظیمات برنامه، Allow restricted settings را تأیید کنی.")
+            .setNegativeButton("انصراف", null)
+            .setPositiveButton("رفتن به تنظیمات") { _, _ ->
+                safeLaunch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }.show()
     }
 
     /** Only TTS voices actually installed by the user/phone are offered. */
@@ -697,7 +813,10 @@ class MainActivity : Activity() {
             AlertDialog.Builder(this).setTitle("صدای فارسی")
                 .setMessage("موتور فعلی صدای فارسی ندارد. از تنظیمات تبدیل متن به گفتار گوشی بسته فارسی را نصب کنید. جنسیت صدا به موتور نصب شده بستگی دارد.")
                 .setPositiveButton("تنظیمات گفتار") { _, _ ->
-                    safeLaunch(Intent("com.android.settings.TTS_SETTINGS"))
+                    if (!safeLaunch(Intent("com.android.settings.TTS_SETTINGS"))) {
+                        safeLaunch(Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://play.google.com/store/apps/details?id=com.google.android.tts")))
+                    }
                 }.setNegativeButton("بستن", null).show()
             return
         }
@@ -735,11 +854,69 @@ class MainActivity : Activity() {
         else say("نتونستم درصد باتری رو بخونم.")
     }
 
+    private fun playLocalMusic(query: String?) {
+        askPermission(DanaMusicService.requiredPermission(), 409) {
+            val action = if (query.isNullOrBlank()) DanaMusicService.PLAY_RANDOM
+                else DanaMusicService.PLAY_NAMED
+            if (DanaMusicService.command(this, action, query)) {
+                say(if (query.isNullOrBlank()) "دارم از آهنگ‌های گوشی یکی رو انتخاب می‌کنم."
+                    else "دارم آهنگ $query رو در حافظه جست‌وجو می‌کنم.")
+            } else say("پخش موسیقی شروع نشد؛ مجوز یا محدودیت اجرای پس‌زمینه رو بررسی کن.")
+        }
+    }
+
+    private fun openRadioPanel(radio: String, enabled: Boolean) {
+        val panel = if (radio == "wifi" && Build.VERSION.SDK_INT >= 29)
+            Intent(Settings.Panel.ACTION_WIFI)
+        else Intent(if (radio == "bluetooth") Settings.ACTION_BLUETOOTH_SETTINGS
+            else Settings.ACTION_WIFI_SETTINGS)
+        if (safeLaunch(panel)) say("اندروید اجازه تغییر مستقیم ${if (radio == "wifi") "وای‌فای" else "بلوتوث"} " +
+            "را به دانا نمی‌دهد. پنل باز شد؛ برای ${if (enabled) "روشن کردن" else "خاموش کردن"} خودت تأیید کن.")
+    }
+
+    private fun scheduleDatedAlarm(at: Long, label: String?) {
+        val save = {
+            val alarm = runCatching { DatedAlarmScheduler(this).schedule(at, label) }.getOrNull()
+            if (alarm == null) say("ثبت آلارم ممکن نشد؛ تنظیمات اعلان یا ساعت گوشی رو بررسی کن.")
+            else {
+                val whenText = android.icu.text.SimpleDateFormat("EEEE d MMMM ساعت HH:mm",
+                    android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(at))
+                say(if (alarm.exact) "آلارم دقیق برای $whenText ثبت شد."
+                    else "آلارم برای $whenText ثبت شد، اما ممکنه با تأخیر اجرا بشه. برای دقت بیشتر، مجوز آلارم دقیق رو در تنظیمات فعال کن.")
+                if (!alarm.exact && Build.VERSION.SDK_INT >= 31) {
+                    AlertDialog.Builder(this)
+                        .setTitle("مجوز آلارم دقیق")
+                        .setMessage("آلارم ثبت شد اما ممکن است با تأخیر پخش شود. می‌خواهی برای فعال کردن آلارم دقیق وارد تنظیمات گوشی شوی؟")
+                        .setNegativeButton("بعداً", null)
+                        .setPositiveButton("تنظیمات") { _, _ ->
+                            safeLaunch(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                Uri.parse("package:$packageName")))
+                        }.show()
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 33)
+            askPermission(Manifest.permission.POST_NOTIFICATIONS, 410, save)
+        else save()
+    }
+
     private fun controlMedia(command: String) {
+        val localAction = when (command) {
+            "play", "resume" -> DanaMusicService.RESUME
+            "pause" -> DanaMusicService.PAUSE
+            "next" -> DanaMusicService.NEXT
+            "previous" -> DanaMusicService.PREVIOUS
+            "stop" -> DanaMusicService.STOP
+            else -> DanaMusicService.PAUSE
+        }
+        if (DanaMusicService.running && DanaMusicService.command(this, localAction)) {
+            say("فرمان کنترل پخش موسیقی رو ارسال کردم.")
+            return
+        }
         val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val keyCode = when (command) {
-            "play" -> KeyEvent.KEYCODE_MEDIA_PLAY
-            "pause" -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            "play", "resume" -> KeyEvent.KEYCODE_MEDIA_PLAY
+            "pause", "stop" -> KeyEvent.KEYCODE_MEDIA_PAUSE
             "next" -> KeyEvent.KEYCODE_MEDIA_NEXT
             "previous" -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
             else -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
@@ -747,10 +924,10 @@ class MainActivity : Activity() {
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         say(when (command) {
-            "play" -> "پخش رسانه رو ادامه دادم."
-            "pause" -> "پخش رسانه متوقف شد."
-            "next" -> "رفتم آهنگ بعدی."
-            "previous" -> "رفتم آهنگ قبلی."
+            "play", "resume" -> "فرمان ادامه پخش به برنامه موسیقی فرستاده شد."
+            "pause", "stop" -> "فرمان توقف به برنامه موسیقی فرستاده شد."
+            "next" -> "فرمان آهنگ بعدی به برنامه موسیقی ارسال شد."
+            "previous" -> "فرمان آهنگ قبلی به برنامه موسیقی ارسال شد."
             else -> "کنترل رسانه انجام شد."
         })
     }
@@ -788,10 +965,20 @@ class MainActivity : Activity() {
 
     private fun say(text: String, afterSpeech: (() -> Unit)? = null) {
         answer.text = "دانا: $text"
-        status.text = "در حال پاسخ…"
+        status.text = if (voice.isReady()) "در حال پاسخ صوتی…" else
+            "پاسخ متنی: برای شنیدن صدا، صدای فارسی گوشی را فعال کن."
         voice.speak(text) {
-            status.text = "آماده دریافت فرمان"
-            afterSpeech?.invoke()
+            if (voice.isReady()) status.text = "آماده دریافت فرمان"
+            if (afterSpeech != null) {
+                relistenAfterResponse = false
+                afterSpeech.invoke()
+            } else if (relistenAfterResponse && memory.conversationMode && appVisible &&
+                voice.isReady() && state == DialogState.COMMAND && !aiRequestActive) {
+                relistenAfterResponse = false
+                requestMicAndListen()
+            } else {
+                relistenAfterResponse = false
+            }
         }
     }
 
@@ -989,7 +1176,16 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         appVisible = true
+        visibleNow = true
         if (::wakeButton.isInitialized) updateWakeButton()
+        // Android microphone foreground services must be started while the Activity is visible.
+        // This is a best-effort opt-in resume, never a background/boot microphone launch.
+        if (memory.wakeAutoResume && !memory.privateMode && !DanaWakeService.running(this) &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
+            WakeModelInstaller.installed(getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)) &&
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).getString("last_stop_reason", null) == null) {
+            startWakeService()
+        }
         getSharedPreferences("wake_runtime", MODE_PRIVATE)
             .getString("last_stop_reason", null)?.let { status.text = it }
         if (intent.action == DanaWakeService.ACTION_OPEN_COMMAND) {
@@ -1009,6 +1205,8 @@ class MainActivity : Activity() {
     }
     override fun onPause() {
         appVisible = false
+        visibleNow = false
+        relistenAfterResponse = false
         speech.cancel() // میکروفون نباید هنگام باز شدن برنامه دیگر باقی بماند.
         super.onPause()
     }

@@ -12,6 +12,10 @@ object FeatureRegression {
         var count = 0
         fun test(ok: Boolean) { check(ok) { "Feature regression #${count + 1} failed" }; count++ }
         test(WakePhrase.extractAfterWake("سلام دانا") == "")
+        test(WakePhrase.extractAfterWake("دانا") == "")
+        test(WakePhrase.extractAfterWake("دانا تلگرام رو باز کن") == "تلگرام رو باز کن")
+        test(WakePhrase.extractAfterWake("دانایی") == null)
+        test(CommandEngine.parse("دانا برنامه تلگرام رو روشن کن") == DanaAction.App("تلگرام"))
         test(WakePhrase.extractAfterWake("هی دانا") == "")
         test(WakePhrase.extractAfterWake("سلام دانا، چراغ قوه را روشن کن") == "چراغ قوه را روشن کن")
         test(WakePhrase.extractAfterWake("سلام دَانا چراغ رو روشن کن") == "چراغ رو روشن کن")

@@ -1,0 +1,24 @@
+DANA v1.5 VoiceActions — بسته مخصوص بارگذاری در وب‌سایت GitHub
+
+این فایل ZIP را مستقیماً در GitHub آپلود نکنید؛ ابتدا Extract All کنید.
+پوشه‌های app ،docs ،scripts ،tools و فایل‌های متنی ریشه را از پوشه استخراج‌شده
+به صفحه Add file > Upload files در ریشه مخزن Josefwolfe/DANA-Android بکشید.
+ساختار صحیح: app/src/main/java/com/dana/ai/DanaMusicService.kt
+نه: DANA-v1.5-GitHub-Web-Update/app/... و نه: DANA-Android/app/...
+
+این بسته تغییرات تجمعی نسخه 1.5 را دارد، از جمله نصب‌کننده مدل Vosk فارسی،
+بیدارباش صوتی آزمایشی، موسیقی، فرمان‌های اتصال و آلارم تاریخ‌دار.
+مدل فارسی Vosk داخل ZIP نیست؛ بعد از نصب APK جدید باید آن را جداگانه از
+https://alphacephei.com/vosk/models دانلود و در خود دانا نصب کنید.
+
+این بسته عمداً شامل .github/workflows نیست تا تنظیمات Build موفق قبلی
+GitHub Actions تغییر نکند. فایل SHA256SUMS.txt هم عمداً حذف شده تا هش قدیمی
+برای سورس جدید به‌عنوان هش معتبر نمایش داده نشود.
+
+در انتهای آپلود روی Commit changes بزنید. بعد از سبز شدن اجرای جدید
+Actions > Build DANA installable APK > Summary > Artifacts > DANA-debug-APK
+را باز کنید. فایل app-debug.apk را استخراج و روی گوشی نصب کنید.
+
+نسخه 1.5 هنوز روی گوشی و در GitHub Actions آزمایش نشده است؛
+اگر Build قرمز شد، از اولین خطای قرمز عکس بفرستید.
+هرگز کلید API، رمز، فایل keystore یا داده شخصی را به مخزن عمومی نفرستید.

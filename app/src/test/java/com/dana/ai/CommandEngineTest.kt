@@ -26,6 +26,7 @@ class CommandEngineTest {
     @Test fun torchAndApps() {
         assertEquals(DanaAction.Flashlight(true), CommandEngine.parse("سلام دانا چراغ قوه رو روشن کن"))
         assertEquals(DanaAction.App("واتساپ"), CommandEngine.parse("واتساپ رو باز کن"))
+        assertEquals(DanaAction.App("تلگرام"), CommandEngine.parse("دانا برنامه تلگرام رو روشن کن"))
     }
     @Test fun arabicCharacterVariants() {
         assertEquals("علی", CommandEngine.normalize("علي"))
@@ -73,6 +74,39 @@ class CommandEngineTest {
         val today = ReminderTimeResolver.atLocal(base, 0, 18, 20, utc)
         val tomorrow = ReminderTimeResolver.atLocal(base, 1, 18, 20, utc)
         assertEquals(86_400_000L, tomorrow - today)
+    }
+
+    @Test fun newVoiceFirstCommands() {
+        assertEquals(DanaAction.TodayDate, CommandEngine.parse("امروز چندمه"))
+        assertEquals(DanaAction.Help, CommandEngine.parse("چه کارهایی میتونی بکنی"))
+        assertEquals(DanaAction.WebSearch("قیمت طلا"), CommandEngine.parse("جستجو کن قیمت طلا"))
+        assertEquals(DanaAction.YouTubeSearch("آموزش زبان"),
+            CommandEngine.parse("توی یوتیوب آموزش زبان رو پیدا کن"))
+        assertEquals(DanaAction.Navigate("میدان آزادی"), CommandEngine.parse("مسیریابی تا میدان آزادی"))
+        assertTrue(CommandEngine.parse("مسیریابی تا تهران رو انجام نده") is DanaAction.Unknown)
+    }
+
+    @Test fun handsFreeMusicAndConnectivity() {
+        assertEquals(DanaAction.Music(null), CommandEngine.parse("دانا یه موزیک پخش کن"))
+        assertEquals(DanaAction.Music("شادمهر"), CommandEngine.parse("آهنگ شادمهر رو پخش کن"))
+        assertEquals(DanaAction.Media("pause"), CommandEngine.parse("موزیک رو استپ کن"))
+        assertEquals(DanaAction.Media("resume"), CommandEngine.parse("موزیک رو ادامه بده"))
+        assertEquals(DanaAction.Media("next"), CommandEngine.parse("عوض کن"))
+        assertEquals(DanaAction.Media("stop"), CommandEngine.parse("موزیک رو قطع کن"))
+        assertEquals(DanaAction.Connectivity("wifi", true), CommandEngine.parse("وای فای رو روشن کن"))
+        assertEquals(DanaAction.Connectivity("bluetooth", false), CommandEngine.parse("بلوتوث رو قطع کن"))
+        assertTrue(CommandEngine.parse("موزیک رو پخش نکن") is DanaAction.Unknown)
+    }
+
+    @Test fun dateSpecificPersianAlarms() {
+        assertEquals(DanaAction.DatedAlarm(1, null, 7, 0, null),
+            CommandEngine.parse("فردا ساعت ۷ صبح بیدارم کن"))
+        assertEquals(DanaAction.DatedAlarm(null, Calendar.SATURDAY, 8, 0, null),
+            CommandEngine.parse("برای شنبه ساعت ۸ صبح آلارم بذار"))
+        assertEquals(DanaAction.PersianDateAlarm(25, 7, 20, 0, null),
+            CommandEngine.parse("۲۵ مهر ساعت ۸ شب آلارم بذار"))
+        assertEquals(DanaAction.DatedAlarm(null, Calendar.TUESDAY, 8, 30, null),
+            CommandEngine.parse("برای سه شنبه ساعت هشت و نیم صبح آلارم بذار"))
     }
 
     @Test fun organizerAndMediaCommands() {

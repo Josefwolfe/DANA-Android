@@ -33,6 +33,16 @@ class UserMemory(context: Context) {
         get() = prefs.getBoolean("quick_access_enabled", false)
         set(value) { prefs.edit().putBoolean("quick_access_enabled", value).apply() }
 
+    /** User's explicit consent to resume the wake service when DANA is opened visibly. */
+    var wakeAutoResume: Boolean
+        get() = prefs.getBoolean("wake_auto_resume", false)
+        set(value) { prefs.edit().putBoolean("wake_auto_resume", value).apply() }
+
+    /** Opt-in, foreground-only turn-taking after each spoken answer. */
+    var conversationMode: Boolean
+        get() = prefs.getBoolean("conversation_mode", false)
+        set(value) { prefs.edit().putBoolean("conversation_mode", value).apply() }
+
     var responseStyle: String
         get() = prefs.getString("response_style", "friendly") ?: "friendly"
         set(value) { prefs.edit().putString("response_style", if (value == "short") "short" else "friendly").apply() }

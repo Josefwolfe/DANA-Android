@@ -8,6 +8,9 @@ import java.util.zip.*
 class FeatureModuleTest {
     @Test fun wakePhraseDoesNotActivateOnUnrelatedText() {
         assertEquals("", WakePhrase.extractAfterWake("سلام دانا"))
+        assertEquals("", WakePhrase.extractAfterWake("دانا"))
+        assertEquals("تلگرام رو باز کن", WakePhrase.extractAfterWake("دانا تلگرام رو باز کن"))
+        assertNull(WakePhrase.extractAfterWake("دانایی"))
         assertEquals("چراغ قوه رو روشن کن", WakePhrase.extractAfterWake("سلام دانا چراغ قوه رو روشن کن"))
         assertNull(WakePhrase.extractAfterWake("در فیلم گفت سلام دانا"))
         assertNull(WakePhrase.extractAfterWake("سلام دانایی"))

@@ -7,7 +7,7 @@ import hashlib
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
-output = root.parent / "DANA-Android-v1.3-RC4-FINAL-SOURCE.zip"
+output = root.parent / "DANA-Android-v1.5-VoiceActions-FULL-SOURCE.zip"
 excluded_names = {".git", ".gradle", ".idea", "build", "__pycache__", ".DS_Store",
                   "local.properties", ".env", "gradle-wrapper.jar", "*.keystore", "*.jks", "google-services.json"}
 
@@ -23,7 +23,7 @@ files.append(root / "SHA256SUMS.txt")
 with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for file in files:
         rel = file.relative_to(root).as_posix()
-        info = zipfile.ZipInfo("DANA-Android/" + rel, date_time=(2026, 10, 3, 0, 0, 0))
+        info = zipfile.ZipInfo("DANA-Android/" + rel, date_time=(2026, 10, 10, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         info.external_attr = (0o755 if file.suffix in {".sh", ".py"} or file.name == "gradlew"
                               else 0o644) << 16
