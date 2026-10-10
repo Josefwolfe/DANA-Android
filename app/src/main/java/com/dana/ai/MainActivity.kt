@@ -213,7 +213,9 @@ class MainActivity : Activity() {
             say("در حالت خصوصی، تشخیص صوتی محلی روی این گوشی در دسترس نیست. فرمان رو تایپ کن.")
             return
         }
-        if (!speech.hasOnDeviceRecognizer() && !memory.microphoneDisclosureAccepted) {
+        // The default Android recognizer may send speech to its provider; always ask consent
+        // before allowing it, even if an unrelated on-device recognizer is available.
+        if (!memory.privateMode && !memory.microphoneDisclosureAccepted) {
             AlertDialog.Builder(this).setTitle("حریم خصوصی تشخیص صوتی")
                 .setMessage("موتور تشخیص گفتار این گوشی ممکن است صدا را برای پردازش به سرویس شرکت سازنده ارسال کند. دانا ضبط دائمی انجام نمی‌دهد. برای تشخیص کاملاً آفلاین باید مدل و موتور مناسب روی گوشی نصب شده باشد. می‌خواهی ادامه بدهی؟")
                 .setNegativeButton("فعلاً نه", null)
@@ -232,7 +234,7 @@ class MainActivity : Activity() {
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             status.text = "در انتظار صدای فارسی…"
-            speech.listen()
+            speech.listen(allowOnline = !memory.privateMode && memory.microphoneDisclosureAccepted)
         } else {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 401)
         }
