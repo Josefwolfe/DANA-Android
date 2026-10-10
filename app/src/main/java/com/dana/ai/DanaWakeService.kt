@@ -55,7 +55,8 @@ class DanaWakeService : Service() {
     }
     private var voice: DanaVoice? = null
     private var commandSpeech: SpeechManager? = null
-    private var stage = "init" // init, wake, reply, command_online, command_offline, paused, closed
+    private var onDeviceUnavailableForSession = false
+    private var stage = "init" // init, wake, reply, command_on_device, fallback_pending, command_offline, paused, closed
     private val uiHandoffTimeout = Runnable {
         if (!stopped && stage == "ui_handoff") startWakeRecognition()
     }
@@ -64,6 +65,8 @@ class DanaWakeService : Service() {
     }
     private val onlineTimeout = Runnable {
         if (!stopped && stage == "command_online") startCommandRecognitionOffline()
+        else if (WakeAsrRoutingPolicy.retryWithVosk(stage, stopped))
+            fallbackToVosk("تشخیص آفلاین گوشی طولانی شد")
     }
     private val modelLoadTimeout = Runnable {
         if (!stopped && stage == "loading") {
@@ -113,7 +116,7 @@ class DanaWakeService : Service() {
         override fun run() {
             if (stopped) return
             if (audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION) {
-                if (stage == "wake" || stage == "command_offline" || stage == "command_online") {
+                if (stage == "wake" || stage == "command_offline" || stage == "command_online" || stage == "command_on_device" || stage == "fallback_pending") {
                     commandSpeech?.cancel()
                     main.removeCallbacks(onlineTimeout)
                     closeRecognizer()
@@ -169,16 +172,26 @@ class DanaWakeService : Service() {
         voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
         commandSpeech = SpeechManager(this,
             onResult = { phrase -> main.post {
-                if (!stopped && stage == "command_online") {
+                if (!stopped && (stage == "command_on_device" || stage == "command_online")) {
+                    val wasOnDevice = stage == "command_on_device"
                     main.removeCallbacks(onlineTimeout)
+                    commandSpeech?.close()
                     WakeSessionMetrics.commandCaptured()
+                    WakeSpeechProbe.capture(phrase,
+                        if (wasOnDevice) "ANDROID_ON_DEVICE" else "VOSK_LOCAL")
+                    if (wasOnDevice) {
+                        WakeAsrMetrics.androidResult()
+                        DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD", "ANDROID_ON_DEVICE")
+                    }
                     stage = "reply"
                     handleCommand(phrase)
                 }
             } },
-            onStatus = { message -> if (stage == "command_online") updateNotification(message) },
-            onError = { _ -> main.post {
-                if (!stopped && stage == "command_online") startCommandRecognitionOffline()
+            onStatus = { message -> if (stage == "command_on_device" || stage == "command_online")
+                updateNotification(message) },
+            onError = { message -> main.post {
+                if (!stopped && stage == "command_on_device") fallbackToVosk(message)
+                else if (!stopped && stage == "command_online") startCommandRecognitionOffline()
             } })
         main.post(callCheck)
     }
@@ -207,7 +220,7 @@ class DanaWakeService : Service() {
             voice?.refresh() // Enforce local-only TTS when private mode changes.
             // Stop any potentially online Android recognition immediately when private mode
             // becomes active; the local Vosk wake service itself remains enabled.
-            if (stage == "command_online" || stage == "command_offline") {
+            if (stage == "command_online" || stage == "command_offline" || stage == "command_on_device" || stage == "fallback_pending") {
                 commandSpeech?.cancel()
                 main.removeCallbacks(onlineTimeout)
                 startWakeRecognition()
@@ -263,6 +276,7 @@ class DanaWakeService : Service() {
         main.removeCallbacks(uiHandoffTimeout)
         main.removeCallbacks(responseWatchdog)
         commandCollector.reset()
+        commandSpeech?.close()
         closeRecognizer()
         try {
             // Unrestricted offline recognition allows both "دانا" then a second turn,
@@ -281,13 +295,52 @@ class DanaWakeService : Service() {
         } catch (e: Exception) { recoverOrStop("Vosk در بیدارباش خطا داد: ${e.localizedMessage ?: "خطا"}") }
     }
 
-    /** Wake-triggered commands are always decoded locally, regardless of private mode.
-     * The visible Activity may separately offer Android speech after user consent. */
+    /** Wake-triggered commands never use an online speech provider, including in normal mode.
+     * Prefer Android's explicitly on-device engine where available; if its Persian
+     * model is missing, return to local Vosk and report the failure without network use. */
     private fun startCommandRecognition() {
-        if (!stopped) startCommandRecognitionOffline()
+        if (stopped) return
+        val available = commandSpeech?.hasOnDeviceRecognizer() == true
+        if (WakeAsrRoutingPolicy.useAndroidOnDevice(Build.VERSION.SDK_INT,
+                available, onDeviceUnavailableForSession)) startCommandRecognitionOnDevice()
+        else startCommandRecognitionOffline()
     }
 
-    private fun startCommandRecognitionOffline() {
+    private fun startCommandRecognitionOnDevice() {
+        if (stopped) return
+        main.removeCallbacks(finishCommandAfterSilence)
+        commandCollector.reset()
+        closeRecognizer() // Vosk must release microphone before Android on-device starts.
+        stage = "command_on_device"
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+        WakeSessionMetrics.commandWindow()
+        WakeAsrMetrics.androidStart()
+        DiagnosticEvents.record(this, "WAKE_COMMAND_START", "ANDROID_ON_DEVICE")
+        updateNotification("بعد از بوق فرمان را بگو؛ تشخیص کاملاً آفلاین گوشی")
+        main.removeCallbacks(onlineTimeout)
+        main.postDelayed(onlineTimeout, 14_000L)
+        commandSpeech?.listen(allowOnline = false, requireOnDevice = true)
+    }
+
+    private fun fallbackToVosk(reason: String) {
+        if (!WakeAsrRoutingPolicy.retryWithVosk(stage, stopped)) return
+        // Avoid repeated on-device failures for every wake until the service restarts.
+        onDeviceUnavailableForSession = true
+        stage = "fallback_pending" // Block duplicate late onError callbacks before rearming Vosk.
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+        main.removeCallbacks(onlineTimeout)
+        commandSpeech?.close()
+        WakeAsrMetrics.androidError(reason)
+        WakeAsrMetrics.voskFallback()
+        DiagnosticEvents.record(this, "ANDROID_ON_DEVICE_FAILED", "VOSK_FALLBACK")
+        updateNotification("موتور فارسی آفلاین گوشی آماده نیست؛ بعد از بوق دوباره فرمان را بگو")
+        wakeAcknowledgement()
+        main.postDelayed({
+            if (!stopped && stage == "fallback_pending") startCommandRecognitionOffline(false)
+        }, 220L)
+    }
+
+    private fun startCommandRecognitionOffline(countWindow: Boolean = true) {
         if (stopped) return
         main.removeCallbacks(onlineTimeout)
         stage = "command_offline" // Set before cancelling online recognition callbacks.
@@ -297,7 +350,7 @@ class DanaWakeService : Service() {
         commandCollector.reset()
         closeRecognizer()
         DiagnosticEvents.record(this, "WAKE_COMMAND_START", "VOSK_LOCAL")
-        WakeSessionMetrics.commandWindow()
+        if (countWindow) WakeSessionMetrics.commandWindow()
         try {
             val next = Recognizer(requireNotNull(model), 16000.0f)
             val token = ++recognitionGeneration
@@ -370,6 +423,7 @@ class DanaWakeService : Service() {
             return
         }
         WakeSpeechProbe.capture(phrase)
+        WakeAsrMetrics.voskCommand()
         WakeSessionMetrics.commandCaptured()
         DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD",
             if (segments > 1) "MULTI_SEGMENT" else "SINGLE_SEGMENT")
@@ -399,8 +453,10 @@ class DanaWakeService : Service() {
                 DiagnosticEvents.record(this, "WAKE_WORD_DETECTED")
                 WakeSessionMetrics.wakeDetected()
                 closeRecognizer()
-                if (inlineCommand.isNotBlank()) {
-                    // One-turn hands-free command; do not require the microphone button.
+                if (inlineCommand.isNotBlank() &&
+                    CommandEngine.parse(inlineCommand) !is DanaAction.Unknown) {
+                    // Keep supported one-turn commands; otherwise ask for a second turn
+                    // so the better on-device recognizer can hear the full instruction.
                     WakeSpeechProbe.capture(inlineCommand)
                     WakeSessionMetrics.commandWindow()
                     WakeSessionMetrics.commandCaptured()

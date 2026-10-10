@@ -5,6 +5,14 @@ import java.util.TimeZone
 
 /** آفلاین، بدون SDK و بدون نیاز به میکروفون: آزمون موتور فرمان‌های فارسی. */
 fun main() {
+    // The wake service must never use a network recognizer as an implicit fallback.
+    check(WakeAsrRoutingPolicy.useAndroidOnDevice(36, true, false))
+    check(!WakeAsrRoutingPolicy.useAndroidOnDevice(30, true, false))
+    check(!WakeAsrRoutingPolicy.useAndroidOnDevice(36, false, false))
+    check(!WakeAsrRoutingPolicy.useAndroidOnDevice(36, true, true))
+    check(WakeAsrRoutingPolicy.retryWithVosk("command_on_device", false))
+    check(!WakeAsrRoutingPolicy.retryWithVosk("wake", false))
+    check(!WakeAsrRoutingPolicy.retryWithVosk("command_on_device", true))
     val cases = listOf(
         "سلام دانا" to DanaAction.Greeting,
         "صبح بخیر دانا" to DanaAction.Greeting,

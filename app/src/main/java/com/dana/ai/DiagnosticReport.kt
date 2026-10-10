@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9.5 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.6 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))
@@ -97,6 +97,8 @@ object DiagnosticReport {
             }.getOrDefault("unknown")))
             append("\n[VOICE SESSION COUNTERS — MEMORY ONLY]\n")
             append(WakeSessionMetrics.report())
+            append("\n[OFFLINE COMMAND RECOGNITION — MEMORY ONLY]\n")
+            append(WakeAsrMetrics.report())
             append("\n[WAKE COMMAND EXECUTION — MEMORY ONLY]\n")
             append(WakeExecutionMetrics.report())
             append("Counts reset when Android terminates the app process.\n")

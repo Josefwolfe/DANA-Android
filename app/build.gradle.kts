@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "1.9.5-persian-command-fix-beta"
+        versionCode = 25
+        versionName = "1.9.6-android-ondevice-offline-beta"
     }
 
     compileOptions {

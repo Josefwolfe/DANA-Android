@@ -124,7 +124,7 @@
         <Button android:id="@+id/logButton" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:text="گزارش تست و فرمان‌ها" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="DANA 1.9.5 PersianCommandFix • فعال‌سازی دستی یا بیدارباش آفلاین آزمایشی (فقط با اجازه). صدای زن به موتور فارسی نصب‌شده بستگی دارد. برای تماس و پیام تأیید لازم است. در شارژ کم، بیدارباش متوقف می‌شود."
+            android:text="DANA 1.9.6 OfflineSpeechHybrid • فعال‌سازی دستی یا بیدارباش آفلاین آزمایشی (فقط با اجازه). صدای زن به موتور فارسی نصب‌شده بستگی دارد. برای تماس و پیام تأیید لازم است. در شارژ کم، بیدارباش متوقف می‌شود."
             android:textColor="@color/muted" android:layout_marginTop="20dp"
             android:layout_marginBottom="30dp" android:textSize="12sp" />
     </LinearLayout>

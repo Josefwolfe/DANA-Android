@@ -9,6 +9,7 @@ out_dir="$(mktemp -d)"
 trap 'rm -rf "$out_dir"' EXIT
 kotlinc app/src/main/java/com/dana/ai/CommandEngine.kt app/src/main/java/com/dana/ai/ReminderTimeResolver.kt \
   app/src/main/java/com/dana/ai/WakePhrase.kt \
+  app/src/main/java/com/dana/ai/WakeAsrRoutingPolicy.kt \
   app/src/main/java/com/dana/ai/WakeCommandCollector.kt \
   app/src/main/java/com/dana/ai/WakeSpeechProbe.kt \
   app/src/main/java/com/dana/ai/WakeExecutionMetrics.kt \

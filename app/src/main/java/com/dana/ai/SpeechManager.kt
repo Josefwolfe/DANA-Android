@@ -24,7 +24,17 @@ class SpeechManager(
         SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
     /** Online-capable recognition is allowed only after explicit user consent in MainActivity. */
-    fun listen(allowOnline: Boolean = false) {
+    fun listen(allowOnline: Boolean = false, requireOnDevice: Boolean = false) {
+        if (requireOnDevice && allowOnline) {
+            onError("تشخیص آفلاین و آنلاین را نمی‌توان هم‌زمان فعال کرد.")
+            return
+        }
+        // Privacy: an offline request must NEVER use the generic Android provider.
+        // EXTRA_PREFER_OFFLINE is only a hint and does not guarantee local processing.
+        if (!allowOnline && !hasOnDeviceRecognizer()) {
+            onError("بسته تشخیص فارسی آفلاین روی گوشی در دسترس نیست؛ مدل Vosk را نصب کن.")
+            return
+        }
         if (busy) return
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             onError("موتور تشخیص گفتار روی این گوشی در دسترس نیست.")
@@ -35,8 +45,7 @@ class SpeechManager(
             // recognizer may lack Persian even when isOnDeviceRecognitionAvailable() is true.
             if (recognizer != null && recognizerAllowsOnline != allowOnline) close()
             if (recognizer == null) {
-                recognizer = if (!allowOnline && android.os.Build.VERSION.SDK_INT >= 31 &&
-                    SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
+                recognizer = if (!allowOnline) {
                     SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
                 } else SpeechRecognizer.createSpeechRecognizer(context)
                 recognizerAllowsOnline = allowOnline
