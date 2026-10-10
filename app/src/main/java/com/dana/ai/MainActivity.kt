@@ -423,6 +423,7 @@ class MainActivity : Activity() {
         try {
             when (action) {
                 DanaAction.Greeting -> ask("سلام ${friendlyName()}، گوش می دم. چه کاری داری؟")
+                is DanaAction.Answer -> say(action.text)
                 DanaAction.Time -> {
                     val time = SimpleDateFormat("HH:mm", Locale("fa", "IR")).format(Date())
                     say(if (memory.responseStyle == "short") "ساعت $time" else "${friendlyName()}، الان ساعت $time است.")
@@ -471,12 +472,18 @@ class MainActivity : Activity() {
                 is DanaAction.App -> openApp(action.name)
                 is DanaAction.Flashlight -> askPermission(Manifest.permission.CAMERA, 404) { setTorch(action.enabled) }
                 is DanaAction.Volume -> changeVolume(action.direction)
+                is DanaAction.MediaMute -> setMediaMuted(action.enabled)
+                is DanaAction.Brightness -> changeBrightness(action)
                 is DanaAction.Call -> beginContactAction(action.contact, ContactPurpose.CALL, null)
                 is DanaAction.Sms -> beginContactAction(action.contact, ContactPurpose.SMS, action.message)
                 is DanaAction.Settings -> {
                     val i = when (action.section) {
                         "wifi" -> Intent(Settings.ACTION_WIFI_SETTINGS)
                         "bluetooth" -> Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                        "airplane", "mobile_data" -> Intent(Settings.ACTION_WIRELESS_SETTINGS)
+                        "hotspot" -> Intent("android.settings.TETHER_SETTINGS")
+                        "location" -> Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                        "nfc" -> Intent(Settings.ACTION_NFC_SETTINGS)
                         else -> Intent(Settings.ACTION_SETTINGS)
                     }
                     if (safeLaunch(i)) say("صفحه تنظیمات مربوط باز شد؛ تغییر تنظیمات رو خودت تأیید کن.")
@@ -539,7 +546,7 @@ class MainActivity : Activity() {
                     say(if (action.style == "short") "از این به بعد کوتاه تر جواب می دم." else "لحن پاسخ رو دوستانه تنظیم کردم.")
                 }
                 is DanaAction.Unknown -> {
-                    say("${friendlyName()}، این فرمان هنوز در نسخه آزمایشی پشتیبانی نمی شه.")
+                    say("${friendlyName()}، این جمله رو به فرمان قابل اجرا تبدیل نکردم. با عبارت کوتاه‌تر دوباره بگو؛ برای فهم عبارت‌های متنوع‌تر، اتصال اختیاری هوش مصنوعی رو در تنظیمات فعال کن.")
                     logAction("UNKNOWN", "unsupported", (System.nanoTime() - start) / 1_000_000)
                     return
                 }
@@ -863,6 +870,41 @@ class MainActivity : Activity() {
                     else "دارم آهنگ $query رو در حافظه جست‌وجو می‌کنم.")
             } else say("پخش موسیقی شروع نشد؛ مجوز یا محدودیت اجرای پس‌زمینه رو بررسی کن.")
         }
+    }
+
+    /** Media-stream mute is different from silencing phone calls or disabling the microphone. */
+    private fun setMediaMuted(enabled: Boolean) {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val ok = runCatching {
+            manager.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                if (enabled) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE, 0)
+        }.isSuccess
+        say(if (ok) {
+            if (enabled) "صدای موسیقی بی‌صدا شد." else "صدای موسیقی دوباره فعال شد."
+        } else "کنترل بی‌صدا کردن در این گوشی ممکن نشد.")
+    }
+
+    /** Global brightness requires user-granted WRITE_SETTINGS special access on Android. */
+    private fun changeBrightness(action: DanaAction.Brightness) {
+        if (!Settings.System.canWrite(this)) {
+            say("برای تغییر نور صفحه باید یک بار اجازه تغییر تنظیمات سیستم رو به دانا بدی. " +
+                "صفحه مجوز رو باز می‌کنم؛ بعد از تأیید دوباره فرمان رو بگو.")
+            safeLaunch(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                Uri.parse("package:$packageName")))
+            return
+        }
+        val current = Settings.System.getInt(contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS, 128)
+        val level = if (action.percent != null) {
+            (action.percent * 255 / 100).coerceIn(1, 255)
+        } else (current + action.direction * 35).coerceIn(1, 255)
+        val changed = runCatching {
+            Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE,
+                Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL) &&
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, level)
+        }.getOrDefault(false)
+        say(if (changed) "روشنایی صفحه روی حدود ${level * 100 / 255} درصد تنظیم شد."
+            else "گوشی اجازه تغییر روشنایی رو نداد؛ تنظیمات نمایشگر رو بررسی کن.")
     }
 
     private fun openRadioPanel(radio: String, enabled: Boolean) {

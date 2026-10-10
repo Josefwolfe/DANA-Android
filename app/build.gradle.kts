@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.5.0-beta"
+        versionCode = 17
+        versionName = "1.7.0-offline-beta"
     }
 
     compileOptions {

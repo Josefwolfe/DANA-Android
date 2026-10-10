@@ -23,7 +23,10 @@ object SafetyPolicy {
 
     /** Wake service never performs operations that reveal private data or contact another person. */
     fun permittedWithLockedScreen(action: DanaAction): Boolean =
-        action is DanaAction.Time || action is DanaAction.Battery || action is DanaAction.Flashlight ||
+        action is DanaAction.Time || action is DanaAction.Battery ||
+            action is DanaAction.TodayDate || action is DanaAction.Help ||
+            action is DanaAction.Greeting || action is DanaAction.Flashlight ||
+            action is DanaAction.Volume || action is DanaAction.MediaMute ||
             action is DanaAction.Media || action is DanaAction.Music ||
             action is DanaAction.Alarm || action is DanaAction.DatedAlarm ||
             action is DanaAction.PersianDateAlarm

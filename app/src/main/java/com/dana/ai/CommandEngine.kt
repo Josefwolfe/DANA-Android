@@ -9,6 +9,8 @@ sealed class DanaAction {
     object Battery : DanaAction()
     object TodayDate : DanaAction()
     object Help : DanaAction()
+    /** Spoken answer from a separately consented remote AI service, never a phone action. */
+    data class Answer(val text: String) : DanaAction()
     data class WebSearch(val query: String) : DanaAction()
     data class YouTubeSearch(val query: String) : DanaAction()
     data class Navigate(val destination: String) : DanaAction()
@@ -18,6 +20,10 @@ sealed class DanaAction {
     data class App(val name: String) : DanaAction()
     data class Flashlight(val enabled: Boolean) : DanaAction()
     data class Volume(val direction: Int) : DanaAction()
+    /** Changes media stream mute state; never affects microphone capture. */
+    data class MediaMute(val enabled: Boolean) : DanaAction()
+    /** Requires Android's separate Modify System Settings consent. */
+    data class Brightness(val percent: Int?, val direction: Int = 0) : DanaAction()
     data class Call(val contact: String) : DanaAction()
     data class Sms(val contact: String, val message: String?) : DanaAction()
     data class Settings(val section: String) : DanaAction()
@@ -60,6 +66,15 @@ object CommandEngine {
         }
         return s.replace(Regex("^(?:لطفا|میشه|می شه|ممکنه|خواهشا)\\s+"), "")
             .replace(Regex("\\s+لطفا$"), "").trim()
+    }
+
+    /** Common polite/question forms of Persian imperatives, without altering SMS content. */
+    private fun everydayPhrase(input: String): String {
+        var s = input
+        s = s.replace(Regex("^(?:می ?تونی|می ?توانی|میشه|می ?شه|امکانش هست|ممکنه|لطفا|خواهشا)\\s+"), "")
+        s = s.replace(Regex("^(?:برام|واسم|برای من)\\s+"), "")
+        s = s.replace(Regex("\\s+(?:رو|را)\\s+(باز|اجرا|فعال)\\s+کنی$"), " رو $1 کن")
+        return s
     }
 
     private fun faDigitsToEn(s: String): String {
@@ -111,7 +126,7 @@ object CommandEngine {
     }
 
     fun parse(text: String): DanaAction {
-        val s = stripDana(text)
+        val s = everydayPhrase(stripDana(text))
         // Negative imperatives override every matching positive command.
         if (SafetyPolicy.explicitlyNegated(s)) return DanaAction.Unknown(text)
         if (s.isBlank()) return DanaAction.Unknown(text)
@@ -228,6 +243,14 @@ object CommandEngine {
         Regex("^(.+?) (?:رو|را) انجام شده بزن$").find(s)?.let { return DanaAction.TaskDone(it.groupValues[1].trim()) }
         if (s in setOf("کار هام", "کارها", "کارهای من", "کارهای امروز", "تسک هام", "وظایف من")) return DanaAction.TaskList
 
+        // More natural offline reminders, without a server or generative model.
+        Regex("^(?:یادم بنداز|یادآوری کن) (?:تا|که)? ?(\\d{1,4}) دقیقه (?:دیگه|دیگر|بعد) (.+)$")
+            .find(faDigitsToEn(s))?.let { m ->
+                val minutes = m.groupValues[1].toIntOrNull()
+                if (minutes != null && minutes in 1..10080)
+                    return DanaAction.ReminderIn(minutes, m.groupValues[2].trim())
+            }
+
         // تایمر نسبی: «۳۰ دقیقه دیگه یادم بنداز ...» یا «تایمر 10 دقیقه»
         val timerSource = spokenClockDigits(faDigitsToEn(s))
         Regex("(?:تایمر|(?:(\\d+) دقیقه دیگه))(?: (\\d+) دقیقه)?(?:.*?(?:برای|که|یادم بنداز))?\\s*(.*)")
@@ -245,6 +268,47 @@ object CommandEngine {
                 val h = m.groupValues[1].toIntOrNull(); val min = m.groupValues[2].toIntOrNull() ?: 0
                 if (h != null && h in 0..23 && min in 0..59) return DanaAction.Alarm(h, min, m.groupValues[3].trim().ifEmpty { null })
             }
+
+        Regex("^(?:این رو|این را|اینو) یادداشت کن(?: که)? (.+)$")
+            .find(s)?.let { return DanaAction.NoteAdd(it.groupValues[1].trim()) }
+        Regex("^(?:به لیست کارهام اضافه کن|به کارهام اضافه کن) (.+)$")
+            .find(s)?.let { return DanaAction.TaskAdd(it.groupValues[1].trim()) }
+
+        // Persian screen brightness and sound commands. No special permission is
+        // silently granted: Android will require the user to approve brightness control.
+        val brightness = faDigitsToEn(s)
+        Regex("^(?:نور|روشنایی) (?:صفحه|نمایشگر|گوشی)(?: رو| را)? (\\d{1,3}) ?(?:درصد|٪) (?:کن|بذار|بزار|تنظیم کن)$")
+            .find(brightness)?.let { m ->
+                val percent = m.groupValues[1].toIntOrNull()
+                if (percent != null && percent in 1..100) return DanaAction.Brightness(percent)
+            }
+        if (Regex("(?:نور|روشنایی) (?:صفحه|نمایشگر|گوشی)").containsMatchIn(s)) {
+            if (listOf("بیشتر", "زیاد", "بالا", "روشن تر").any { it in s })
+                return DanaAction.Brightness(null, 1)
+            if (listOf("کمتر", "کم", "پایین", "تاریک تر").any { it in s })
+                return DanaAction.Brightness(null, -1)
+        }
+        if (s in setOf("صدا رو بی صدا کن", "صدای گوشی رو قطع کن", "صدای موزیک رو قطع کن",
+                "موزیک رو بی صدا کن", "صدا رو میوت کن", "صدا رو سایلنت کن"))
+            return DanaAction.MediaMute(true)
+        if (s in setOf("صدا رو از بی صدایی دربیار", "صدا رو وصل کن", "صدا رو آن میوت کن",
+                "صدای موزیک رو وصل کن", "صدا رو دوباره فعال کن"))
+            return DanaAction.MediaMute(false)
+
+        // Settings that Android only allows the user to change in a system panel.
+        // We never claim that DANA directly toggled these restricted radios.
+        if (listOf("حالت پرواز", "مود پرواز", "ایرپلین مود").any { it in s })
+            return DanaAction.Settings("airplane")
+        if (listOf("نقطه اتصال", "هات اسپات", "هاتسپات", "اینترنت اشتراکی").any { it in s })
+            return DanaAction.Settings("hotspot")
+        if (listOf("داده همراه", "دیتای موبایل", "اینترنت سیم کارت", "دیتا گوشی").any { it in s })
+            return DanaAction.Settings("mobile_data")
+        if (("مکان یاب" in s || "موقعیت مکانی" in s || "جی پی اس" in s) &&
+            listOf("روشن", "خاموش", "فعال", "غیرفعال", "تنظیمات", "باز").any { it in s })
+            return DanaAction.Settings("location")
+        if (("ان اف سی" in s || "nfc" in s) &&
+            listOf("روشن", "خاموش", "فعال", "غیرفعال", "تنظیمات", "باز").any { it in s })
+            return DanaAction.Settings("nfc")
 
         // SMS مقدم بر تماس است.
         val smsPatterns = listOf(
@@ -293,12 +357,21 @@ object CommandEngine {
                 if (query !in setOf("رو", "را", "یه", "یک", "برام", "برای من", "رو برام"))
                     return DanaAction.Music(query)
             }
+        if (s in setOf("یه موزیک دیگه بذار", "یه آهنگ دیگه بذار", "یه موزیک دیگه پخش کن",
+                "یه آهنگ دیگه پخش کن", "آهنگ بعدی رو بزن", "این آهنگ رو عوض کن"))
+            return DanaAction.Media("next")
+        if (s in setOf("آهنگ رو دوباره پخش کن", "موزیک رو دوباره پخش کن", "دوباره پلی کن"))
+            return DanaAction.Media("resume")
         if (s in setOf("موزیک پخش کن", "یه موزیک پخش کن", "یک موزیک پخش کن",
                 "یه آهنگ پخش کن", "یک آهنگ پخش کن", "آهنگ پخش کن", "آهنگ بذار",
                 "موزیک بذار", "موزیک بزار", "یه موزیک بذار", "موسیقی پخش کن",
                 "برنامه موزیک رو فعال کن", "موزیک رو فعال کن", "موزیک رو باز کن",
                 "موزیک رو پخش کن", "آهنگ رو پخش کن", "پخش موسیقی"))
             return DanaAction.Music(null)
+        Regex("^(?:یه |یک )?(?:آهنگ|اهنگ|موزیک) (?:از|از خواننده) (.+?) (?:رو |را )?(?:پخش کن|بذار|بزار|بزن)$")
+            .find(s)?.let { return DanaAction.Music(it.groupValues[1].trim()) }
+        Regex("^(?:آهنگ|اهنگ|موزیک) (.+?) (?:رو |را )?(?:پیدا کن و پخش کن|سرچ کن و پخش کن)$")
+            .find(s)?.let { return DanaAction.Music(it.groupValues[1].trim()) }
         Regex("^(.+?) (?:آهنگ|اهنگ|موزیک) (?:رو |را )?(?:پخش کن|بذار|بزار)$")
             .find(s)?.let { return DanaAction.Music(it.groupValues[1].trim()) }
         if (Regex(musicWord).containsMatchIn(s) && "ادامه" in s)
@@ -337,6 +410,36 @@ object CommandEngine {
         for (r in appPatterns) {
             val name = r.find(s)?.groupValues?.get(1)?.trim()
             if (!name.isNullOrBlank()) return DanaAction.App(name)
+        }
+        // Extra colloquial phrasing that otherwise falls through the strict offline grammar.
+        // Do not treat an arbitrary question as an executable phone operation.
+        val flexible = s.replace(Regex("\\s+"), " ").trim()
+        if (flexible in setOf("موزیک بزن", "یه آهنگ بزار", "یه آهنگ بذار", "یه آهنگ برام بذار",
+                "یه آهنگ خوب بذار", "یه موزیک خوب بذار", "یه آهنگ تصادفی بذار", "یه آهنگ بزن",
+                "پخش کن یه آهنگ", "پخش کن یه موزیک", "یه موزیک از گوشیم پخش کن"))
+            return DanaAction.Music(null)
+        if (flexible in setOf("برو آهنگ بعدی", "بعدیش", "بعدیشو بزن", "بعدیش رو بزن", "ردش کن",
+                "این آهنگ رو رد کن", "این موزیک رو رد کن")) return DanaAction.Media("next")
+        if (flexible in setOf("موزیکو نگه دار", "آهنگو نگه دار", "آهنگ رو نگه دار", "پخش رو نگه دار"))
+            return DanaAction.Media("pause")
+        if (flexible in setOf("دوباره پخشش کن", "دوباره پلی کن", "از همون جا ادامه بده"))
+            return DanaAction.Media("resume")
+        if (flexible in setOf("صدا رو بیشتر کن", "صدای گوشی رو بیشتر کن", "ولوم رو ببر بالا"))
+            return DanaAction.Volume(1)
+        if (flexible in setOf("صدا رو کمتر کن", "صدای گوشی رو کمتر کن", "ولوم رو بیار پایین"))
+            return DanaAction.Volume(-1)
+        if (flexible in setOf("فلش گوشی رو روشن کن", "چراغ گوشی رو روشن کن"))
+            return DanaAction.Flashlight(true)
+        if (flexible in setOf("فلش گوشی رو خاموش کن", "چراغ گوشی رو خاموش کن"))
+            return DanaAction.Flashlight(false)
+        Regex("^(?:برو تو|برو توی|برو داخل) (.+)$").find(flexible)?.let {
+            return DanaAction.App(it.groupValues[1].trim())
+        }
+        Regex("^(.+?)(?:و| رو| را) (?:وا کن|بازش کن)$").find(flexible)?.let {
+            return DanaAction.App(it.groupValues[1].trim())
+        }
+        Regex("^(?:پخش کن|بذار|بزار) (?:آهنگ|موزیک) (.+)$").find(flexible)?.let {
+            return DanaAction.Music(it.groupValues[1].trim())
         }
         return DanaAction.Unknown(text)
     }

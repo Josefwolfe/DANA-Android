@@ -261,9 +261,29 @@ class DanaWakeService : Service(), RecognitionListener {
         if (!stopped && (stage == "wake" || stage == "command_offline")) recoverOrStop()
     } }
 
-    private fun handleCommand(text: String) {
+    private fun handleCommand(text: String, inferred: DanaAction? = null) {
         if (stopped) return
-        val action = CommandEngine.parse(text)
+        val action = inferred ?: CommandEngine.parse(text)
+        if (action is DanaAction.Unknown && inferred == null) {
+            val preferences = UserMemory(this)
+            if (preferences.cloudAiEnabled && !preferences.privateMode &&
+                CloudIntentClient.isValidEndpoint(preferences.cloudEndpoint) &&
+                !SafetyPolicy.explicitlyNegated(text)) {
+                stage = "reply"
+                updateNotification("در حال بررسی فرمان با هوش مصنوعی اختیاری…")
+                val endpoint = preferences.cloudEndpoint
+                worker.execute {
+                    val result = runCatching {
+                        CloudIntentClient(endpoint, SecureTokenStore(this).getToken()).infer(text)
+                    }.getOrNull()
+                    main.post {
+                        if (!stopped && !UserMemory(this).privateMode && stage == "reply")
+                            handleCommand(text, result ?: DanaAction.Unknown(text))
+                    }
+                }
+                return
+            }
+        }
         val keyguard = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
         val locked = keyguard.isDeviceLocked || keyguard.isKeyguardLocked
         // Lock-screen actions that expose information or launch other apps need unlocking.
@@ -272,6 +292,15 @@ class DanaWakeService : Service(), RecognitionListener {
             return
         }
         when (action) {
+            is DanaAction.Answer -> reply(action.text)
+            DanaAction.Greeting -> reply("سلام، گوش می‌دم. چه کاری داری؟")
+            DanaAction.Help -> reply("می‌تونم ساعت و تاریخ رو بگم، موسیقی رو کنترل کنم، " +
+                "برنامه باز کنم، آلارم و یادآوری بذارم و کارهات رو ثبت کنم.")
+            DanaAction.TodayDate -> {
+                val today = android.icu.text.SimpleDateFormat("EEEE d MMMM yyyy",
+                    android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date())
+                reply("امروز $today است.")
+            }
             DanaAction.Time -> reply("الان ساعت ${SimpleDateFormat("HH:mm", Locale("fa", "IR")).format(Date())} است.")
             DanaAction.Battery -> {
                 val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
@@ -300,6 +329,17 @@ class DanaWakeService : Service(), RecognitionListener {
                 }.isSuccess
                 reply(if (ok) "صدای گوشی تنظیم شد." else "تغییر صدا ممکن نبود.")
             }
+            is DanaAction.MediaMute -> {
+                val ok = runCatching {
+                    audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                        if (action.enabled) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE, 0)
+                }.isSuccess
+                reply(if (!ok) "کنترل صدای موسیقی ممکن نشد."
+                    else if (action.enabled) "صدای موسیقی بی‌صدا شد."
+                    else "صدای موسیقی دوباره فعال شد.")
+            }
+            is DanaAction.Brightness -> notifyForUser(text,
+                "برای کنترل نور صفحه، دانا رو باز کن؛ ممکنه مجوز تغییر تنظیمات لازم باشه")
             is DanaAction.Music -> {
                 if (!DanaMusicService.hasMusicPermission(this)) {
                     notifyForUser(text, "برای پخش موسیقی ابتدا دسترسی فایل‌های صوتی را در دانا فعال کن")
@@ -359,6 +399,45 @@ class DanaWakeService : Service(), RecognitionListener {
                 scheduleFromWake(at, action.label, text)
             }
 
+            is DanaAction.NoteAdd -> {
+                if (UserMemory(this).privateMode) reply("در حالت خصوصی یادداشت ذخیره نمی‌کنم.")
+                else if (action.text.isBlank() || action.text.length > 160) reply("یادداشت باید کوتاه باشه.")
+                else {
+                    PersonalStore(this).addNote(action.text)
+                    reply("یادداشت ذخیره شد.")
+                }
+            }
+            DanaAction.NoteList -> {
+                val notes = PersonalStore(this).notes().take(4)
+                reply(if (notes.isEmpty()) "هنوز یادداشتی نداری."
+                    else "یادداشت‌های اخیر: " + notes.joinToString("؛ "))
+            }
+            is DanaAction.TaskAdd -> {
+                if (UserMemory(this).privateMode) reply("در حالت خصوصی کار جدید ذخیره نمی‌کنم.")
+                else if (action.text.isBlank() || action.text.length > 160) reply("عنوان کار باید کوتاه باشه.")
+                else {
+                    PersonalStore(this).addTask(action.text)
+                    reply("کار جدید ثبت شد.")
+                }
+            }
+            DanaAction.TaskList -> {
+                val pending = PersonalStore(this).tasks().filterNot { it.done }.take(4)
+                reply(if (pending.isEmpty()) "کار انجام‌نشده‌ای در فهرست نداری."
+                    else "کارهای باقی‌مونده: " + pending.joinToString("؛ ") { it.text })
+            }
+            is DanaAction.TaskDone -> reply(if (PersonalStore(this).markFirstMatchingDone(action.text))
+                "انجام شدن کار ثبت شد." else "این کار رو در فهرست پیدا نکردم.")
+            is DanaAction.ReminderIn -> scheduleReminderFromWake(
+                ReminderTimeResolver.inMinutes(System.currentTimeMillis(), action.minutes),
+                action.text, text)
+            is DanaAction.ReminderAt -> scheduleReminderFromWake(
+                ReminderTimeResolver.atLocal(System.currentTimeMillis(), action.dayOffset,
+                    action.hour, action.minute), action.text, text)
+            DanaAction.ReminderList -> {
+                val pending = ReminderStore(this).pending().take(4)
+                reply(if (pending.isEmpty()) "یادآوری در انتظار نداری."
+                    else "یادآوری‌های بعدی: " + pending.joinToString("؛ ") { it.text })
+            }
             is DanaAction.App -> {
                 // Android restricts background activity launches. An optional, user-enabled
                 // system-bound accessibility service can start the named app without reading
@@ -372,9 +451,32 @@ class DanaWakeService : Service(), RecognitionListener {
                 else notifyForUser(text,
                     "برای باز کردن ${action.name} اعلان را لمس کن یا دسترسی اجرای صوتی را فعال کن")
             }
-            is DanaAction.Unknown -> reply("این فرمان رو متوجه نشدم؛ دوباره بگو.")
+            is DanaAction.Unknown -> reply("این جمله رو نفهمیدم. لطفاً کوتاه‌تر بگو؛ برای فرمان‌های متنوع‌تر می‌تونی هوش مصنوعی اختیاری رو تنظیم کنی.")
             else -> notifyForUser(text, "برای ادامه فرمان، اعلان دانا را لمس کن")
         }
+    }
+
+    private fun scheduleReminderFromWake(at: Long, reminderText: String, original: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifyForUser(original, "برای یادآوری‌ها، مجوز اعلان‌های دانا رو فعال کن")
+            return
+        }
+        val notifier = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        if (!notifier.areNotificationsEnabled()) {
+            notifyForUser(original, "اعلان‌های دانا در تنظیمات گوشی غیرفعال است")
+            return
+        }
+        if (reminderText.isBlank() || reminderText.length > 160 || at <= System.currentTimeMillis()) {
+            reply("متن یا زمان یادآوری معتبر نیست.")
+            return
+        }
+        val saved = runCatching {
+            val item = ReminderStore(this).add(reminderText, at)
+            ReminderScheduler(this).schedule(item)
+        }.isSuccess
+        reply(if (saved) "یادآوری ثبت شد. ممکنه به خاطر ذخیره باتری کمی دیرتر اعلام بشه."
+            else "ثبت یادآوری ممکن نشد؛ تنظیمات اعلان رو بررسی کن.")
     }
 
     private fun scheduleFromWake(at: Long?, label: String?, original: String) {
