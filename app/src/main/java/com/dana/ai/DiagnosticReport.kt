@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9.4 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.5 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))

@@ -74,6 +74,12 @@ object CommandEngine {
         s = s.replace(Regex("^(?:می ?تونی|می ?توانی|میشه|می ?شه|امکانش هست|ممکنه|لطفا|خواهشا)\\s+"), "")
         s = s.replace(Regex("^(?:برام|واسم|برای من)\\s+"), "")
         s = s.replace(Regex("\\s+(?:رو|را)\\s+(باز|اجرا|فعال)\\s+کنی$"), " رو $1 کن")
+        // Vosk can mistake «کن» for «کنم/کنی/کنه». Recover ONLY a small,
+        // explicitly named set of harmless device/app commands. Never apply this
+        // correction to calls, messages, alarms, settings or arbitrary speech.
+        s = s.replace(Regex("""^((?:برنامه )?(?:تلگرام|واتساپ|واتس اپ|اینستاگرام|کروم|یوتیوب|گوگل مپ)) (?:رو|را) (باز|اجرا) (?:کنم|کنی|کنه)$"""), "$1 رو $2 کن")
+        s = s.replace(Regex("""^((?:چراغ قوه|چراغ گوشی|چراغ|فلش گوشی|فلاش گوشی|فلش|فلاش)) (?:رو|را) (روشن|خاموش) (?:کنم|کنی|کنه)$"""), "$1 رو $2 کن")
+        s = s.replace(Regex("""^(دوربین) (?:رو|را) (روشن|باز|اجرا) (?:کنم|کنی|کنه)$"""), "$1 رو $2 کن")
         return s
     }
 
@@ -324,7 +330,7 @@ object CommandEngine {
 
         if (("چراغ" in s || "فلاش" in s) && ("روشن" in s || "خاموش" in s)) return DanaAction.Flashlight("روشن" in s)
         if (("صدا" in s || "ولوم" in s) && listOf("کم", "زیاد", "بلند").any { it in s }) return DanaAction.Volume(if ("کم" in s) -1 else 1)
-        if (("دوربین" in s || "عکاسی" in s) && listOf("باز", "اجرا", "بیار").any { it in s }) return DanaAction.Camera
+        if (("دوربین" in s || "عکاسی" in s) && listOf("باز", "اجرا", "بیار", "روشن").any { it in s }) return DanaAction.Camera
         if (s in setOf("مخاطبین", "مخاطب ها", "دفترچه تلفن") ||
             (("مخاطبین" in s || "دفترچه تلفن" in s || "مخاطب ها" in s) &&
                 listOf("باز", "نشون", "نشان", "بیار").any { it in s })) return DanaAction.Contacts

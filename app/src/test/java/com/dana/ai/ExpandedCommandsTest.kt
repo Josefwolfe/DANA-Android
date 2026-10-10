@@ -6,6 +6,12 @@ import org.junit.Test
 class ExpandedCommandsTest {
     @Test fun everydaySpeechIsRecognized() {
         assertEquals(DanaAction.App("تلگرام"), CommandEngine.parse("دانا میتونی تلگرام رو باز کنی"))
+        assertEquals(DanaAction.App("تلگرام"), CommandEngine.parse("تلگرام رو اجرا کنم"))
+        assertEquals(DanaAction.Camera, CommandEngine.parse("دوربین رو روشن کن"))
+        assertEquals(DanaAction.Flashlight(true), CommandEngine.parse("چراغ قوه رو روشن کنم"))
+        assertTrue(CommandEngine.parse("تلگرام رو اجرا نکنم") is DanaAction.Unknown)
+        assertTrue(CommandEngine.parse("چراغ قوه رو روشن نکنم") is DanaAction.Unknown)
+        assertTrue(CommandEngine.parse("به رضا زنگ بزنم") is DanaAction.Unknown)
         assertEquals(DanaAction.App("واتساپ"), CommandEngine.parse("دانا برو توی واتساپ"))
         assertEquals(DanaAction.Music(null), CommandEngine.parse("دانا یه آهنگ خوب بذار"))
         assertEquals(DanaAction.Media("next"), CommandEngine.parse("دانا بعدیشو بزن"))

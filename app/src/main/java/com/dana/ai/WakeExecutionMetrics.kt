@@ -10,6 +10,7 @@ object WakeExecutionMetrics {
     private val requested = AtomicInteger()
     private val needsUser = AtomicInteger()
     private val unsupported = AtomicInteger()
+    private val actionFailures = AtomicInteger()
     @Volatile private var lastType = "NONE"
     @Volatile private var lastOutcome = "NONE"
 
@@ -27,7 +28,8 @@ object WakeExecutionMetrics {
         lastOutcome = status
         when (status) {
             "UI_ROUTED" -> uiRouted.incrementAndGet()
-            "APP_LAUNCH_REQUESTED", "LOCAL_ACTION_REQUESTED", "RESPONSE_ONLY", "UI_ACTION_DISPATCHED" -> requested.incrementAndGet()
+            "APP_LAUNCH_REQUESTED", "LOCAL_ACTION_REQUESTED", "RESPONSE_ONLY", "UI_ACTION_DISPATCHED", "TORCH_SET_REQUESTED" -> requested.incrementAndGet()
+            "TORCH_SET_FAILED" -> actionFailures.incrementAndGet()
             "USER_TAP_REQUIRED" -> needsUser.incrementAndGet()
             "UNSUPPORTED" -> unsupported.incrementAndGet()
         }
@@ -39,6 +41,7 @@ object WakeExecutionMetrics {
         append("Actions/responses requested (not verified completed): ").append(requested.get()).append('\n')
         append("Commands needing user tap: ").append(needsUser.get()).append('\n')
         append("Unsupported commands: ").append(unsupported.get()).append('\n')
+        append("Local action request failures: ").append(actionFailures.get()).append('\n')
         append("Last command category: ").append(lastType).append('\n')
         append("Last dispatch outcome: ").append(lastOutcome).append('\n')
     }

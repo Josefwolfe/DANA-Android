@@ -503,8 +503,11 @@ class DanaWakeService : Service() {
                         } ?: error("flash unavailable")
                         cameras.setTorchMode(id, action.enabled)
                     }.isSuccess
-                    reply(if (ok) "چراغ قوه ${if (action.enabled) "روشن" else "خاموش"} شد." else
-                        "کنترل چراغ ممکن نبود؛ گوشی را باز کن.")
+                    // setTorchMode returning without throwing is an accepted request,
+                    // not an independently verified hardware state transition.
+                    reply(if (ok) "درخواست ${if (action.enabled) "روشن" else "خاموش"} کردن چراغ قوه ارسال شد." else
+                        "کنترل چراغ ممکن نبود؛ گوشی را باز کن.",
+                        if (ok) "TORCH_SET_REQUESTED" else "TORCH_SET_FAILED")
                 }
             }
             is DanaAction.Volume -> {
