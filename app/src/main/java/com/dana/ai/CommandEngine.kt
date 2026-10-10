@@ -142,7 +142,7 @@ object CommandEngine {
         if (s in setOf("دوستانه جواب بده", "صمیمی جواب بده")) return DanaAction.ResponseStyle("friendly")
 
         // Voice-first everyday requests, handled locally without an AI subscription.
-        if (s in setOf("امروز چندمه", "امروز چندم است", "تاریخ امروز", "امروز چه روزیه",
+        if (s in setOf("امروز چندمه", "امروز چندم است", "تاریخ امروز", "تاریخ چنده", "امروز تاریخ چندمه", "امروز چه روزیه",
                 "امروز چه روزی است", "امروز چند شنبه است", "امروز چندشنبه است"))
             return DanaAction.TodayDate
         if (s in setOf("راهنما", "کمک", "چه کارهایی می تونی بکنی", "چه کارهایی میتونی بکنی",
@@ -329,8 +329,12 @@ object CommandEngine {
             (("مخاطبین" in s || "دفترچه تلفن" in s || "مخاطب ها" in s) &&
                 listOf("باز", "نشون", "نشان", "بیار").any { it in s })) return DanaAction.Contacts
         if ("ساعت چنده" in s || "ساعت چند" in s || "چه ساعتی" in s || "الان ساعت" in s) return DanaAction.Time
-        if ("باتری" in s && ("چنده" in s || "درصد" in s || "وضعیت" in s)) return DanaAction.Battery
+        if (("باتری" in s && ("چنده" in s || "درصد" in s || "وضعیت" in s)) ||
+            s in setOf("شارژ چنده", "شارژ گوشی چنده", "چقدر شارژ دارم")) return DanaAction.Battery
         if ("تقویم" in s && listOf("باز", "اجرا", "بیار").any { it in s }) return DanaAction.Calendar
+        // Vosk sometimes drops the final imperative word of short app commands.
+        Regex("^(?:برنامه )?(تلگرام|واتساپ|واتس اپ|اینستاگرام|کروم|یوتیوب)(?: رو| را)? باز$")
+            .find(s)?.let { return DanaAction.App(it.groupValues[1]) }
 
         // Music controls are checked before generic app launching. Context-free
         // «عوض کن / ادامه بده» refer to the active player in hands-free mode.
@@ -362,7 +366,7 @@ object CommandEngine {
             return DanaAction.Media("next")
         if (s in setOf("آهنگ رو دوباره پخش کن", "موزیک رو دوباره پخش کن", "دوباره پلی کن"))
             return DanaAction.Media("resume")
-        if (s in setOf("موزیک پخش کن", "یه موزیک پخش کن", "یک موزیک پخش کن",
+        if (s in setOf("موزیک پخش", "آهنگ پخش", "موزیک پخش کن", "یه موزیک پخش کن", "یک موزیک پخش کن",
                 "یه آهنگ پخش کن", "یک آهنگ پخش کن", "آهنگ پخش کن", "آهنگ بذار",
                 "موزیک بذار", "موزیک بزار", "یه موزیک بذار", "موسیقی پخش کن",
                 "برنامه موزیک رو فعال کن", "موزیک رو فعال کن", "موزیک رو باز کن",

@@ -46,6 +46,10 @@ class DanaWakeService : Service() {
     private var recognizer: Recognizer? = null
     // Every Vosk listener is tied to one generation. Shutdown can emit a late final result.
     private var recognitionGeneration = 0L
+    private val commandCollector = WakeCommandCollector()
+    private val finishCommandAfterSilence = Runnable {
+        if (!stopped && stage == "command_offline") finishCollectedCommand()
+    }
     private var voice: DanaVoice? = null
     private var commandSpeech: SpeechManager? = null
     private var stage = "init" // init, wake, reply, command_online, command_offline, paused, closed
@@ -227,12 +231,14 @@ class DanaWakeService : Service() {
         if (audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION) {
             stage = "paused"; return
         }
+        main.removeCallbacks(finishCommandAfterSilence)
+        commandCollector.reset()
         closeRecognizer()
         try {
-            // WAKE ONLY: a grammar-limited recognizer cannot reliably transcribe arbitrary
-            // commands. Always open a fresh, unrestricted recognizer for the second turn.
-            val recognizer = Recognizer(requireNotNull(model), 16000.0f,
-                """["دانا", "سلام دانا", "هی دانا", "[unk]"]""")
+            // Unrestricted offline recognition allows both "دانا" then a second turn,
+            // AND a wake word plus an instruction spoken as one sentence.
+            // Grammar-limited wake decoding previously discarded the command suffix.
+            val recognizer = Recognizer(requireNotNull(model), 16000.0f)
             val token = ++recognitionGeneration
             this.recognizer = recognizer
             stage = "wake"
@@ -257,6 +263,8 @@ class DanaWakeService : Service() {
         stage = "command_offline" // Set before cancelling online recognition callbacks.
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
         commandSpeech?.cancel()
+        main.removeCallbacks(finishCommandAfterSilence)
+        commandCollector.reset()
         closeRecognizer()
         DiagnosticEvents.record(this, "WAKE_COMMAND_START", "VOSK_LOCAL")
         WakeSessionMetrics.commandWindow()
@@ -273,33 +281,71 @@ class DanaWakeService : Service() {
 
     private fun listenerFor(expectedStage: String, token: Long): RecognitionListener =
         object : RecognitionListener {
-            private fun receive(hypothesis: String?) {
-                // A previous recognizer can deliver onFinalResult *after* cancel/shutdown.
-                // Never interpret that stale wake text as the next command.
+            private fun receive(hypothesis: String?, final: Boolean) {
+                // Never accept late results from the previous Vosk microphone session.
                 main.post {
                     if (!WakeRecognitionGate.accepts(recognitionGeneration, token, stage, expectedStage)) {
                         WakeSessionMetrics.staleCallback()
                         return@post
                     }
-                    processHypothesis(hypothesis, expectedStage)
+                    if (expectedStage == "command_offline") {
+                        val text = runCatching {
+                            JSONObject(hypothesis ?: "{}").optString("text").trim()
+                        }.getOrDefault("")
+                        if (text.isNotBlank()) {
+                            commandCollector.add(text)
+                            main.removeCallbacks(finishCommandAfterSilence)
+                            // Wait for a second segment rather than discarding the first.
+                            // Even known commands get a short grace period for negation.
+                            main.postDelayed(finishCommandAfterSilence,
+                                if (commandCollector.isKnown()) 1_100L else 2_000L)
+                        }
+                        if (final) finishCollectedCommand()
+                    } else processHypothesis(hypothesis, expectedStage)
                 }
             }
-            override fun onResult(hypothesis: String?) = receive(hypothesis)
-            override fun onFinalResult(hypothesis: String?) = receive(hypothesis)
-            override fun onPartialResult(hypothesis: String?) { /* No action on partial text. */ }
+            override fun onResult(hypothesis: String?) = receive(hypothesis, false)
+            override fun onFinalResult(hypothesis: String?) = receive(hypothesis, true)
+            override fun onPartialResult(hypothesis: String?) { /* never execute partial speech */ }
             override fun onTimeout() { main.post {
                 if (WakeRecognitionGate.accepts(recognitionGeneration, token, stage, expectedStage) &&
                     expectedStage == "command_offline") {
-                    WakeSessionMetrics.commandTimeout()
-                    DiagnosticEvents.record(this@DanaWakeService, "WAKE_COMMAND_TIMEOUT")
-                    startWakeRecognition()
+                    if (commandCollector.hasSpeech()) finishCollectedCommand()
+                    else {
+                        WakeSessionMetrics.commandTimeout()
+                        DiagnosticEvents.record(this@DanaWakeService, "WAKE_COMMAND_TIMEOUT")
+                        startWakeRecognition()
+                    }
                 }
             } }
             override fun onError(e: Exception?) { main.post {
-                if (WakeRecognitionGate.accepts(recognitionGeneration, token, stage, expectedStage))
-                    recoverOrStop("خطای میکروفون Vosk: ${e?.localizedMessage ?: "نامشخص"}")
+                if (WakeRecognitionGate.accepts(recognitionGeneration, token, stage, expectedStage)) {
+                    if (expectedStage == "command_offline" && commandCollector.hasSpeech())
+                        finishCollectedCommand()
+                    else recoverOrStop("خطای میکروفون Vosk: ${e?.localizedMessage ?: "نامشخص"}")
+                }
             } }
         }
+
+    private fun finishCollectedCommand() {
+        if (stopped || stage != "command_offline") return
+        main.removeCallbacks(finishCommandAfterSilence)
+        val phrase = commandCollector.phrase()
+        val segments = commandCollector.segmentCount()
+        commandCollector.reset()
+        closeRecognizer()
+        if (phrase.isBlank()) {
+            WakeSessionMetrics.commandTimeout()
+            startWakeRecognition()
+            return
+        }
+        WakeSpeechProbe.capture(phrase)
+        WakeSessionMetrics.commandCaptured()
+        DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD",
+            if (segments > 1) "MULTI_SEGMENT" else "SINGLE_SEGMENT")
+        stage = "reply"
+        handleCommand(phrase)
+    }
 
     private fun wakeAcknowledgement() {
         // No Persian TTS voice is installed on some phones. A short local tone still tells
@@ -315,12 +361,24 @@ class DanaWakeService : Service() {
         if (stopped) return
         val text = runCatching { JSONObject(hypothesis ?: "{}").optString("text").trim() }.getOrDefault("")
         if (text.isBlank()) return
+        // Opt-in only: helps diagnose whether unrestricted Vosk hears the wake word at all.
+        if (sourceStage == "wake") WakeSpeechProbe.capture(text)
         when (sourceStage) {
             "wake" -> {
-                if (WakePhrase.extractAfterWake(text) == null) return
+                val inlineCommand = WakePhrase.extractAfterWake(text) ?: return
                 DiagnosticEvents.record(this, "WAKE_WORD_DETECTED")
                 WakeSessionMetrics.wakeDetected()
                 closeRecognizer()
+                if (inlineCommand.isNotBlank()) {
+                    // One-turn hands-free command; do not require the microphone button.
+                    WakeSpeechProbe.capture(inlineCommand)
+                    WakeSessionMetrics.commandWindow()
+                    WakeSessionMetrics.commandCaptured()
+                    DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD", "SAME_UTTERANCE")
+                    stage = "reply"
+                    handleCommand(inlineCommand)
+                    return
+                }
                 stage = "awaiting_command"
                 getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
                     .putString("stage", stage).apply()
@@ -331,13 +389,6 @@ class DanaWakeService : Service() {
                 main.postDelayed({
                     if (!stopped && stage == "awaiting_command") startCommandRecognition()
                 }, 450L)
-            }
-            "command_offline" -> {
-                DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD")
-                WakeSessionMetrics.commandCaptured()
-                closeRecognizer()
-                stage = "reply"
-                handleCommand(text)
             }
         }
     }
@@ -585,6 +636,7 @@ class DanaWakeService : Service() {
         if (stopped) return
         stage = "reply"
         updateNotification(message)
+        if (voice?.isReady() != true) wakeAcknowledgement() // Audible acknowledgement without Persian TTS.
         voice?.speak(message) { main.postDelayed({ startWakeRecognition() }, 300) }
             ?: main.postDelayed({ startWakeRecognition() }, 300)
     }
@@ -643,6 +695,7 @@ class DanaWakeService : Service() {
             powerReceiverRegistered = false
         }
         main.removeCallbacksAndMessages(null)
+        commandCollector.reset()
         commandSpeech?.close(); commandSpeech = null
         closeRecognizer(); model?.close(); model = null
         voice?.close(); voice = null

@@ -228,6 +228,24 @@ class MainActivity : Activity() {
         updateWakeButton()
 
         findViewById<Button>(R.id.diagnosticsButton).setOnClickListener { showDiagnostics() }
+        findViewById<Button>(R.id.wakeProbeButton).setOnClickListener {
+            if (WakeSpeechProbe.enabled()) {
+                WakeSpeechProbe.disable()
+                updateWakeProbeButton()
+                say("نمایش متن آزمایشی خاموش شد و متن قبلی پاک شد.")
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("آزمایش تشخیص گفتار بیدارباش")
+                    .setMessage("برای ده دقیقه فقط آخرین عبارت شنیده‌شده توسط Vosk (حتی گفت‌وگوی اطراف) در حافظه موقت نگهداری می‌شود و در گزارش خطایابی نمایش داده خواهد شد. ممکن است نام، پیام یا اطلاعات خصوصی در آن باشد. هیچ چیز خودکار ارسال نمی‌شود. پس از آزمایش، گزارش را قبل از ارسال بخوان. فعال کنم؟")
+                    .setNegativeButton("انصراف", null)
+                    .setPositiveButton("فعال‌سازی ده دقیقه‌ای") { _, _ ->
+                        WakeSpeechProbe.toggle()
+                        updateWakeProbeButton()
+                        say("آزمایش تشخیص گفتار فعال شد. بیدارباش را روشن کن و یک فرمان ساده بگو.")
+                    }.show()
+            }
+        }
+        updateWakeProbeButton()
 
         findViewById<Button>(R.id.logButton).setOnClickListener {
             AlertDialog.Builder(this)
@@ -237,6 +255,12 @@ class MainActivity : Activity() {
                 .setNeutralButton("پاک کردن آمار") { _, _ -> testLog.clear(); DiagnosticEvents.clear(this); say("گزارش و رویدادهای خطایابی پاک شد.") }
                 .show()
         }
+    }
+
+    private fun updateWakeProbeButton() {
+        findViewById<Button>(R.id.wakeProbeButton).text =
+            if (WakeSpeechProbe.enabled()) "خاموش کردن آزمایش متن گفتار (حذف فوری)"
+            else "آزمایش اختیاری متن شنیده‌شده (۱۰ دقیقه)"
     }
 
     private fun showDiagnostics() {
@@ -1165,9 +1189,15 @@ class MainActivity : Activity() {
                 relistenAfterResponse = false
                 afterSpeech.invoke()
             } else if (relistenAfterResponse && memory.conversationMode && appVisible &&
-                voice.isReady() && state == DialogState.COMMAND && !aiRequestActive) {
+                state == DialogState.COMMAND && !aiRequestActive) {
                 relistenAfterResponse = false
-                requestMicAndListen()
+                // No Persian TTS installed? Still support explicitly enabled conversation mode.
+                // Delay and show status instead of requiring a new microphone tap.
+                status.text = "مکالمه پیوسته: دوباره آماده شنیدن فرمان…"
+                window.decorView.postDelayed({
+                    if (appVisible && memory.conversationMode && !DanaWakeService.running(this))
+                        requestMicAndListen()
+                }, 850L)
             } else {
                 relistenAfterResponse = false
             }
@@ -1370,6 +1400,7 @@ class MainActivity : Activity() {
         appVisible = true
         visibleNow = true
         if (::wakeButton.isInitialized) updateWakeButton()
+        updateWakeProbeButton()
         // Android microphone foreground services must be started while the Activity is visible.
         // This is a best-effort opt-in resume, never a background/boot microphone launch.
         if (memory.wakeAutoResume && !DanaWakeService.running(this) &&

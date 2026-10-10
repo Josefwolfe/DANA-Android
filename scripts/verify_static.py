@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.1-offline-wakefix-beta"' in app_gradle and 'versionCode = 20' in app_gradle
+assert 'versionName = "1.9.2-offline-commandfix-beta"' in app_gradle and 'versionCode = 21' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.1-offline-wakefix-beta"' in app_gradle and 'versionCode = 20' in app_gradle
+assert 'versionName = "1.9.2-offline-commandfix-beta"' in app_gradle and 'versionCode = 21' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -182,3 +182,12 @@ assert 'recognitionGeneration++' in wake and 'stage = "awaiting_command"' in wak
 assert 'WakeSessionMetrics.report()' in (pkg / 'DiagnosticReport.kt').read_text()
 assert 'دانا چراغ قوه رو روشن کن' not in wake.split('private fun startWakeRecognition()', 1)[1].split('private fun startCommandRecognition()', 1)[0]
 print('PASS: v1.9.1 separate wake/command recognizers, stale callback guard and private session counters.')
+
+# v1.9.2: buffered command recognition and explicitly opt-in, memory-only speech probe.
+assert (pkg / 'WakeCommandCollector.kt').is_file()
+assert (pkg / 'WakeSpeechProbe.kt').is_file()
+assert 'finishCollectedCommand()' in wake and 'commandCollector.add(text)' in wake
+assert 'WakeSpeechProbe.capture(phrase)' in wake
+assert 'wakeProbeButton' in activity and 'WakeSpeechProbe.report()' in (pkg / 'DiagnosticReport.kt').read_text()
+assert 'WakeSpeechProbe.toggle()' in activity
+print('PASS: v1.9.2 buffered offline commands and opt-in transient transcription probe.')

@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9.1 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.2 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))
@@ -96,7 +96,9 @@ object DiagnosticReport {
             }.getOrDefault("unknown")))
             append("\n[VOICE SESSION COUNTERS — MEMORY ONLY]\n")
             append(WakeSessionMetrics.report())
-            append("Counts reset when Android terminates the app process. No speech text is stored.\n")
+            append("Counts reset when Android terminates the app process.\n")
+            append("\n[OPTIONAL TRANSCRIPT PROBE]\n")
+            append(WakeSpeechProbe.report())
             append("\n[COMMAND STATISTICS]\n")
             append(runCatching { TestLog(context).report() }
                 .getOrDefault("(آمار فرمان‌ها در دسترس نیست)"))
@@ -104,7 +106,8 @@ object DiagnosticReport {
             append("\n[RECENT SAFE EVENTS (max 80)]\n")
             append(DiagnosticEvents.recent(context)).append('\n')
             append("\n[REPORT LIMITATIONS]\n")
-            append("No raw speech, audio, contacts, messages, notes, device IDs, tokens, or file paths are included.\n")
+            append("No audio, contacts, messages, notes, device IDs, tokens, or file paths are included by default.\n")
+            append("An explicitly enabled 10-minute transcript probe may show the last recognized phrase.\n")
             append("Dispatched actions are not proof of completion by other apps.\n")
             append("This is an app diagnostic snapshot, not Android logcat or a full system crash trace.\n")
         }
