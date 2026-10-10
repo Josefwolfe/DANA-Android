@@ -56,13 +56,26 @@ class WhisperCommandRecognizer(private val context: Context) {
 
     /** 16 kHz mono PCM. End after ~0.9 s of silence, cap at 9 s. */
     private fun recordUntilSilence(token: Int): FloatArray? {
+        // A permission check in start() does not protect this call if the user
+        // revokes RECORD_AUDIO between scheduling and opening the microphone.
+        // Check at the actual AudioRecord call site, too (required by Android Lint).
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED) {
+            throw SecurityException("RECORD_AUDIO permission is missing or revoked")
+        }
         val rate = 16_000
         val min = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT)
         check(min > 0) { "Unsupported audio format" }
-        val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
-            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(min, 4096))
+        val audio = try {
+            AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                maxOf(min, 4096))
+        } catch (e: SecurityException) {
+            // Android may revoke permission after the check; report a safe
+            // failure to the caller instead of crashing the foreground service.
+            throw SecurityException("RECORD_AUDIO permission was revoked", e)
+        }
         if (audio.state != AudioRecord.STATE_INITIALIZED) {
             audio.release()
             error("Microphone not initialized")
