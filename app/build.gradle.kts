@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "1.9.0-offline-diagnostics-beta"
+        versionCode = 20
+        versionName = "1.9.1-offline-wakefix-beta"
     }
 
     compileOptions {

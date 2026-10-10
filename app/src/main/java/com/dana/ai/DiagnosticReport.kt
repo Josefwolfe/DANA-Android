@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.1 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))
@@ -94,6 +94,9 @@ object DiagnosticReport {
             append(check("Battery optimization exempt", runCatching {
                 flag(power.isIgnoringBatteryOptimizations(context.packageName))
             }.getOrDefault("unknown")))
+            append("\n[VOICE SESSION COUNTERS — MEMORY ONLY]\n")
+            append(WakeSessionMetrics.report())
+            append("Counts reset when Android terminates the app process. No speech text is stored.\n")
             append("\n[COMMAND STATISTICS]\n")
             append(runCatching { TestLog(context).report() }
                 .getOrDefault("(آمار فرمان‌ها در دسترس نیست)"))

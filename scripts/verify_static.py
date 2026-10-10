@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.0-offline-diagnostics-beta"' in app_gradle and 'versionCode = 19' in app_gradle
+assert 'versionName = "1.9.1-offline-wakefix-beta"' in app_gradle and 'versionCode = 20' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.0-offline-diagnostics-beta"' in app_gradle and 'versionCode = 19' in app_gradle
+assert 'versionName = "1.9.1-offline-wakefix-beta"' in app_gradle and 'versionCode = 20' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -172,3 +172,13 @@ assert 'safeToken' in (pkg / 'DiagnosticEvents.kt').read_text()
 assert 'WAKE_MODEL_LOADING' in wake and 'MODEL_IMPORT_FAILED' in activity
 assert (root / 'DIAGNOSTICS_V1_9_FA.md').is_file()
 print('PASS: v1.9 diagnostics UI, user-driven share, privacy filtering and event capture.')
+
+# v1.9.1 wake turn-taking: never parse commands from a grammar-limited wake recognizer.
+assert (pkg / 'WakeRecognitionGate.kt').is_file()
+assert (pkg / 'WakeSessionMetrics.kt').is_file()
+assert 'listenerFor("wake", token)' in wake and 'listenerFor("command_offline", token)' in wake
+assert 'if (!stopped) startCommandRecognitionOffline()' in wake
+assert 'recognitionGeneration++' in wake and 'stage = "awaiting_command"' in wake
+assert 'WakeSessionMetrics.report()' in (pkg / 'DiagnosticReport.kt').read_text()
+assert 'دانا چراغ قوه رو روشن کن' not in wake.split('private fun startWakeRecognition()', 1)[1].split('private fun startCommandRecognition()', 1)[0]
+print('PASS: v1.9.1 separate wake/command recognizers, stale callback guard and private session counters.')

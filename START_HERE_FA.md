@@ -1,3 +1,7 @@
+> **اصلاح v1.9.1 بیدارباش آفلاین:** [رفع فرمان UNKNOWN و راهنمای آزمایش](WAKEFIX_V1_9_1_FA.md).
+
+> **نسخه 1.9 Offline Diagnostics Beta:** [راهنمای دکمه خطایابی، گزارش کامل و اشتراک‌گذاری](DIAGNOSTICS_V1_9_FA.md).
+
 > **نسخه 1.8 Offline VoiceFix Beta:** [راهنمای ارتقا](UPGRADE_V1_8_VOICEFIX_FA.md) و [رفع اشکال Vosk و حالت خصوصی](docs/VOICE_TROUBLESHOOTING_V1_8_FA.md).
 
 > **نسخه 1.7 Offline Beta:** [راهنمای ارتقای آفلاین و نصب در GitHub](UPGRADE_V1_7_OFFLINE_FA.md).

@@ -808,7 +808,7 @@ class MainActivity : Activity() {
             }
             runtime.getBoolean("ready", false) -> {
                 DiagnosticEvents.record(this, "WAKE_READY")
-                status.text = "بیدارباش فارسی فعال است؛ بگو «دانا»."
+                status.text = "بیدارباش فعال است؛ بگو «دانا»، منتظر بوق بمان و سپس فرمان را بگو."
                 updateWakeButton()
             }
             attempt > 10 && !runtime.getBoolean("running", false) -> {
