@@ -1,0 +1,8 @@
+<resources>
+    <color name="bg">#0B1120</color>
+    <color name="panel">#162237</color>
+    <color name="panel_border">#263950</color>
+    <color name="accent">#53C5E9</color>
+    <color name="white">#F0F6FA</color>
+    <color name="muted">#B4C4D4</color>
+</resources>

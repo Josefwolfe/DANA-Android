@@ -1,0 +1,4 @@
+# Replace the hostname with YOUR verified domain; configure DNS before starting Caddy.
+dana.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

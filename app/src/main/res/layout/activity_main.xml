@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/bg" android:fillViewport="true" android:layoutDirection="rtl">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="22dp">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="✦ DANA" android:textDirection="ltr" android:textAlignment="center"
+            android:textSize="35sp" android:textStyle="bold" android:textColor="@color/accent"
+            android:layout_marginTop="30dp" />
+        <TextView android:id="@+id/greeting" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="سلام، من دانا هستم"
+            android:textColor="@color/white" android:textSize="23sp"
+            android:textAlignment="center" android:layout_marginTop="12dp" />
+        <TextView android:id="@+id/statusText" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="آماده دریافت فرمان"
+            android:textColor="@color/muted" android:textSize="14sp"
+            android:textAlignment="center" android:layout_marginTop="8dp" />
+
+        <LinearLayout android:id="@+id/namePanel" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="24dp"
+            android:orientation="vertical" android:padding="18dp" android:background="@drawable/bg_panel">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="دوست داری چه اسمی صدات کنم؟" android:textSize="17sp"
+                android:textColor="@color/white" />
+            <EditText android:id="@+id/nameInput" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:hint="اسم خودت رو بنویس یا با صدا بگو"
+                android:textColor="@color/white" android:textColorHint="@color/muted"
+                android:singleLine="true" android:inputType="textPersonName" />
+            <Button android:id="@+id/saveNameButton" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:text="ذخیره اسم"
+                android:textColor="@color/bg" android:backgroundTint="@color/accent" />
+            <Button android:id="@+id/voiceNameButton" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:text="🎙 اسمم رو با صدا می‌گم" />
+        </LinearLayout>
+
+        <Button android:id="@+id/micButton" android:layout_width="match_parent"
+            android:layout_height="68dp" android:text="🎙  صحبت با دانا"
+            android:textSize="21sp" android:textStyle="bold" android:layout_marginTop="24dp"
+            android:background="@drawable/bg_button" android:backgroundTint="@null"
+            android:textColor="@color/bg" />
+        <EditText android:id="@+id/commandInput" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="12dp"
+            android:hint="یا فرمان را اینجا تایپ کن (برای تست بدون میکروفون)"
+            android:inputType="textCapSentences|textMultiLine" android:minLines="1"
+            android:maxLines="3" android:textColor="@color/white"
+            android:textColorHint="@color/muted" />
+        <Button android:id="@+id/runCommandButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="اجرای فرمان متنی" />
+        <TextView android:id="@+id/heardText" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="آخرین فرمان: —" android:textColor="@color/muted"
+            android:paddingTop="18dp" android:textSize="15sp" />
+        <TextView android:id="@+id/answerText" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="پاسخ دانا: —" android:textColor="@color/white"
+            android:paddingTop="9dp" android:textSize="16sp" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="فرمان‌های سریع" android:textColor="@color/accent" android:textStyle="bold"
+            android:layout_marginTop="25dp" android:textSize="19sp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:layout_marginTop="6dp">
+            <Button android:id="@+id/timeButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="ساعت" />
+            <Button android:id="@+id/torchButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="چراغ قوه" />
+            <Button android:id="@+id/cameraButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="دوربین" />
+        </LinearLayout>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="حالت استفاده" android:textColor="@color/accent" android:textStyle="bold"
+            android:layout_marginTop="20dp" android:textSize="19sp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/drivingButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="حالت رانندگی: خاموش" />
+            <Button android:id="@+id/sleepButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="حالت استراحت: خاموش" />
+        </LinearLayout>
+        <Button android:id="@+id/contactsButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="👥 باز کردن دفترچه تلفن" />
+        <Button android:id="@+id/calendarButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="📅 باز کردن تقویم" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <Button android:id="@+id/batteryButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="🔋 باتری" />
+            <Button android:id="@+id/notesButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="📝 یادداشت‌ها" />
+            <Button android:id="@+id/tasksButton" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content" android:text="✅ کارها" />
+        </LinearLayout>
+        <Button android:id="@+id/notificationButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="🔔 اجازه خواندن خلاصه اعلان‌ها (اختیاری)" />
+        <Button android:id="@+id/notificationSummaryButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="📋 خلاصه اعلان‌های اخیر" />
+        <TextView android:id="@+id/privacyStatus" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="حالت خصوصی: خاموش • حافظه قابل تنظیم"
+            android:textColor="@color/muted" android:paddingTop="12dp" />
+        <Button android:id="@+id/remindersButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="⏰ یادآوری‌های من" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="بیدارباش آفلاین (آزمایشی؛ مصرف باتری بیشتر)" android:textColor="#B7E5EF"
+            android:layout_marginTop="14dp" />
+        <Button android:id="@+id/importWakeModelButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="نصب مدل کوچک فارسی Vosk از ZIP" />
+        <Button android:id="@+id/wakeButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="فعال‌سازی آزمایشی «سلام دانا»" />
+        <Button android:id="@+id/aiSettingsButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="تنظیم هوش مصنوعی آنلاین (اختیاری)" />
+        <Button android:id="@+id/quickAccessButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="🔔 افزودن میانبر دسترسی سریع" />
+        <Button android:id="@+id/settingsButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="⚙ تنظیمات حافظه و حریم خصوصی" />
+        <Button android:id="@+id/nameChangeButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="ویرایش نام من" />
+        <Button android:id="@+id/logButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="گزارش تست و فرمان‌ها" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="DANA 1.0 RC1 • فعال‌سازی دستی یا بیدارباش آفلاین آزمایشی (فقط با اجازه). صدای زن به موتور فارسی نصب‌شده بستگی دارد. برای تماس و پیام تأیید لازم است. در شارژ کم، بیدارباش متوقف می‌شود."
+            android:textColor="@color/muted" android:layout_marginTop="20dp"
+            android:layout_marginBottom="30dp" android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>
