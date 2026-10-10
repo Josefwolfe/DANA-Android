@@ -1,3 +1,7 @@
+> **نسخه 1.7 Offline Beta:** [راهنمای ارتقای آفلاین و نصب در GitHub](UPGRADE_V1_7_OFFLINE_FA.md).
+
+> **نسخه 1.6 Beta:** راهنمای قابلیت‌های جدید و محدودیت‌ها: [UPGRADE_V1_6_FA.md](UPGRADE_V1_6_FA.md).
+
 > **افزوده‌شده در v1.5 Beta:** برای موسیقی محلی، فرمان‌های وای‌فای/بلوتوث و آلارم تاریخ‌دار، فایل [UPGRADE_V1_5_FA.md](UPGRADE_V1_5_FA.md) را بخوانید.
 
 # DANA Android v1.3 RC4 — Build-ready source
