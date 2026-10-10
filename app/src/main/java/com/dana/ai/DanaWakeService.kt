@@ -55,8 +55,10 @@ class DanaWakeService : Service(), RecognitionListener {
         }
     }
     private fun failWake(reason: String) {
+        DiagnosticEvents.record(this, "WAKE_SERVICE_FAILED", DiagnosticEventRules.failureCategory(reason))
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
             .putBoolean("ready", false)
+            .putString("stage", "failed")
             .putString("last_stop_reason", reason).apply()
         updateNotification(reason)
         stopSelf()
@@ -140,8 +142,10 @@ class DanaWakeService : Service(), RecognitionListener {
         powerReceiverRegistered = true
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
             .putBoolean("running", true).putBoolean("ready", false)
+            .putString("stage", "initializing")
             .remove("last_stop_reason").apply()
         aliveInProcess = true
+        DiagnosticEvents.record(this, "WAKE_SERVICE_CREATED")
         voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
         commandSpeech = SpeechManager(this,
             onResult = { phrase -> main.post {
@@ -188,7 +192,8 @@ class DanaWakeService : Service(), RecognitionListener {
                 return START_NOT_STICKY
             }
             stage = "loading"
-            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", false).apply()
+            DiagnosticEvents.record(this, "WAKE_MODEL_LOADING")
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", false).putString("stage", "loading").apply()
             updateNotification("در حال بازکردن مدل فارسی Vosk… ممکن است کمی زمان ببرد")
             main.postDelayed(modelLoadTimeout, 90_000L)
             worker.execute {
@@ -197,10 +202,13 @@ class DanaWakeService : Service(), RecognitionListener {
                     if (stopped) { loaded.getOrNull()?.close(); return@post }
                     main.removeCallbacks(modelLoadTimeout)
                     if (loaded.isFailure) {
+                        DiagnosticEvents.record(this, "WAKE_MODEL_ERROR",
+                            loaded.exceptionOrNull()?.javaClass?.simpleName?.uppercase(Locale.ROOT) ?: "UNKNOWN")
                         val reason = loaded.exceptionOrNull()?.localizedMessage?.take(180)
                             ?: "ساختار فایل مدل ناقص است"
                         failWake("مدل فارسی Vosk باز نشد: $reason")
                     } else {
+                        DiagnosticEvents.record(this, "WAKE_MODEL_LOADED")
                         model = loaded.getOrNull()
                         startWakeRecognition()
                     }
@@ -222,7 +230,8 @@ class DanaWakeService : Service(), RecognitionListener {
             recognition = SpeechService(recognizer, 16000.0f).also { it.startListening(this) }
             this.recognizer = recognizer
             stage = "wake"
-            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", true).apply()
+            DiagnosticEvents.record(this, "WAKE_LISTENING")
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", true).putString("stage", "wake").apply()
             updateNotification("فعال: منتظر «دانا» • برای توقف، اعلان را باز کن")
         } catch (e: Exception) { recoverOrStop("Vosk در بیدارباش خطا داد: ${e.localizedMessage ?: "خطا"}") }
     }
@@ -233,6 +242,8 @@ class DanaWakeService : Service(), RecognitionListener {
         if (!UserMemory(this).privateMode && UserMemory(this).microphoneDisclosureAccepted) {
             closeRecognizer()
             stage = "command_online"
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+            DiagnosticEvents.record(this, "WAKE_COMMAND_START", "ANDROID_PROVIDER")
             updateNotification("دانا در حال شنیدن فرمان فارسی است…")
             main.postDelayed(onlineTimeout, 12_000L)
             commandSpeech?.listen(allowOnline = true) ?: startCommandRecognitionOffline()
@@ -243,8 +254,10 @@ class DanaWakeService : Service(), RecognitionListener {
         if (stopped) return
         main.removeCallbacks(onlineTimeout)
         stage = "command_offline" // Set before cancelling online recognition callbacks.
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
         commandSpeech?.cancel()
         closeRecognizer()
+        DiagnosticEvents.record(this, "WAKE_COMMAND_START", "VOSK_LOCAL")
         try {
             val next = Recognizer(requireNotNull(model), 16000.0f)
             recognition = SpeechService(next, 16000.0f).also { it.startListening(this, 8500) }
@@ -266,6 +279,7 @@ class DanaWakeService : Service(), RecognitionListener {
         when (stage) {
             "wake" -> {
                 val remaining = WakePhrase.extractAfterWake(text) ?: return
+                DiagnosticEvents.record(this, "WAKE_WORD_DETECTED")
                 closeRecognizer()
                 stage = "reply"
                 if (remaining.isNotBlank()) handleCommand(remaining)
@@ -275,6 +289,7 @@ class DanaWakeService : Service(), RecognitionListener {
                 }
             }
             "command_offline" -> {
+                DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD")
                 closeRecognizer()
                 stage = "reply"
                 handleCommand(text)
@@ -294,6 +309,8 @@ class DanaWakeService : Service(), RecognitionListener {
     private fun handleCommand(text: String, inferred: DanaAction? = null) {
         if (stopped) return
         val action = inferred ?: CommandEngine.parse(text)
+        DiagnosticEvents.record(this, if (action is DanaAction.Unknown) "WAKE_COMMAND_UNKNOWN" else "WAKE_COMMAND_PARSED",
+            action.javaClass.simpleName.uppercase(Locale.ROOT))
         if (action is DanaAction.Unknown && inferred == null) {
             val preferences = UserMemory(this)
             if (preferences.cloudAiEnabled && !preferences.privateMode &&
@@ -571,6 +588,7 @@ class DanaWakeService : Service(), RecognitionListener {
     }
     private fun recoverOrStop(reason: String = "خطای شنود Vosk") {
         if (stopped) return
+        DiagnosticEvents.record(this, "WAKE_RECOVERY", DiagnosticEventRules.failureCategory(reason))
         closeRecognizer()
         errors++
         if (errors > 3) failWake("شنود بعد از چند خطا متوقف شد: ${reason.take(180)}")
@@ -578,6 +596,7 @@ class DanaWakeService : Service(), RecognitionListener {
     }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
+        DiagnosticEvents.record(this, "WAKE_SERVICE_DESTROYED")
         stopped = true; stage = "closed"; aliveInProcess = false
         if (powerReceiverRegistered) {
             unregisterReceiver(powerReceiver)
@@ -589,7 +608,8 @@ class DanaWakeService : Service(), RecognitionListener {
         voice?.close(); voice = null
         worker.shutdownNow()
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
-            .putBoolean("running", false).putBoolean("ready", false).apply()
+            .putBoolean("running", false).putBoolean("ready", false)
+            .putString("stage", "stopped").apply()
         super.onDestroy()
     }
 }

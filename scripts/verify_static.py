@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.8.0-offline-voicefix-beta"' in app_gradle and 'versionCode = 18' in app_gradle
+assert 'versionName = "1.9.0-offline-diagnostics-beta"' in app_gradle and 'versionCode = 19' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.8.0-offline-voicefix-beta"' in app_gradle and 'versionCode = 18' in app_gradle
+assert 'versionName = "1.9.0-offline-diagnostics-beta"' in app_gradle and 'versionCode = 19' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -160,3 +160,15 @@ assert 'if (stopped || UserMemory(this).privateMode) return' not in wake
 assert 'modelLoadTimeout' in wake and 'last_stop_reason' in wake
 assert 'onProgress' in (pkg / 'WakeModelInstaller.kt').read_text()
 print('PASS: v1.8 local-only private speech, Vosk diagnostics and ZIP progress guards.')
+
+# v1.9 privacy-safe user-initiated diagnostics and export.
+assert (pkg / 'DiagnosticReport.kt').is_file()
+assert (pkg / 'DiagnosticEvents.kt').is_file()
+assert (pkg / 'DiagnosticEventRules.kt').is_file()
+assert 'diagnosticsButton' in activity
+assert 'Intent.ACTION_SEND' in activity and 'ClipData.newPlainText' in activity
+assert 'UserMemory(context).privateMode' in (pkg / 'DiagnosticEvents.kt').read_text()
+assert 'safeToken' in (pkg / 'DiagnosticEvents.kt').read_text()
+assert 'WAKE_MODEL_LOADING' in wake and 'MODEL_IMPORT_FAILED' in activity
+assert (root / 'DIAGNOSTICS_V1_9_FA.md').is_file()
+print('PASS: v1.9 diagnostics UI, user-driven share, privacy filtering and event capture.')

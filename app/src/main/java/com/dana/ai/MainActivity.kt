@@ -5,6 +5,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
@@ -83,6 +85,7 @@ class MainActivity : Activity() {
         gatewaySecrets = SecureTokenStore(this)
         finder = ContactFinder(this)
         testLog = TestLog(this)
+        DiagnosticEvents.record(this, "APP_OPEN")
         personalStore = PersonalStore(this)
         reminderStore = ReminderStore(this)
         reminderScheduler = ReminderScheduler(this)
@@ -114,19 +117,27 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.voiceSettingsButton).setOnClickListener { showPersianVoices() }
 
         offlineSpeech = OfflineSpeechManager(
-            onResult = { phrase -> if (appVisible) receiveSpeech(phrase) },
+            onResult = { phrase -> if (appVisible) {
+                DiagnosticEvents.record(this, "VOSK_RESULT")
+                receiveSpeech(phrase)
+            } },
             onStatus = { message -> if (appVisible) status.text = message },
             onError = { message -> if (appVisible) {
                 relistenAfterResponse = false
+                DiagnosticEvents.record(this, "VOSK_ERROR", DiagnosticEventRules.failureCategory(message))
                 status.text = message
                 answer.text = "دانا: $message"
                 if (::voice.isInitialized && voice.isReady()) voice.speak(message)
             } })
         speech = SpeechManager(this,
-            onResult = { phrase -> runOnUiThread { receiveSpeech(phrase) } },
+            onResult = { phrase -> runOnUiThread {
+                DiagnosticEvents.record(this, "ANDROID_SPEECH_RESULT")
+                receiveSpeech(phrase)
+            } },
             onStatus = { value -> runOnUiThread { status.text = value } },
             onError = { error -> runOnUiThread {
                 if (!appVisible) return@runOnUiThread
+                DiagnosticEvents.record(this, "ANDROID_SPEECH_ERROR", DiagnosticEventRules.failureCategory(error))
                 // Android speech services may lack the Persian language pack. Use the user's
                 // imported Vosk model instead of reporting a dead end.
                 val root = getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
@@ -142,6 +153,7 @@ class MainActivity : Activity() {
                 }
             } })
         voice = DanaVoice(this) { available ->
+            DiagnosticEvents.record(this, "TTS_INITIALIZED", if (available) "READY" else "UNAVAILABLE")
             if (!available) {
                 status.text = "پاسخ صوتی غیرفعال: صدای فارسی موتور گفتار نصب نیست. دکمه تنظیم صدای فارسی را بزن."
                 answer.text = "دانا: برای شنیدن جواب‌ها باید صدای فارسی گوشی را فعال کنی."
@@ -215,14 +227,49 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.aiSettingsButton).setOnClickListener { showCloudAiSettings() }
         updateWakeButton()
 
+        findViewById<Button>(R.id.diagnosticsButton).setOnClickListener { showDiagnostics() }
+
         findViewById<Button>(R.id.logButton).setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle("گزارش آزمایشی دانا")
                 .setMessage(testLog.report())
                 .setNegativeButton("بستن", null)
-                .setNeutralButton("پاک کردن آمار") { _, _ -> testLog.clear(); say("گزارش آزمایش پاک شد.") }
+                .setNeutralButton("پاک کردن آمار") { _, _ -> testLog.clear(); DiagnosticEvents.clear(this); say("گزارش و رویدادهای خطایابی پاک شد.") }
                 .show()
         }
+    }
+
+    private fun showDiagnostics() {
+        val report = runCatching {
+            DiagnosticReport.build(this, voice.isReady(), voice.choices().size,
+                offlineSpeech.isActive())
+        }.getOrElse { error ->
+            "DANA DIAGNOSTICS\nگزارش کامل تولید نشد. نوع خطا: ${error.javaClass.simpleName}\n" +
+                "مجوزها و فضای ذخیره‌سازی گوشی را بررسی کن."
+        }
+        AlertDialog.Builder(this)
+            .setTitle("🛠 خطایابی و گزارش کامل دانا")
+            .setMessage("این گزارش وضعیت Vosk، میکروفون، مجوزها، بیدارباش، گفتار فارسی، باتری و رویدادهای اخیر را نشان می‌دهد. متن فرمان‌ها، شماره‌ها، پیام‌ها و رمزها در آن نیست.\n\n" +
+                report.take(12_000))
+            .setPositiveButton("ارسال گزارش") { _, _ ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "DANA v1.9 diagnostic report")
+                    putExtra(Intent.EXTRA_TEXT, report)
+                }
+                try {
+                    startActivity(Intent.createChooser(intent, "گزارش را با چه برنامه‌ای ارسال می‌کنی؟"))
+                } catch (_: ActivityNotFoundException) {
+                    status.text = "برنامه‌ای برای اشتراک‌گذاری پیدا نشد؛ گزینه کپی را انتخاب کن."
+                }
+            }
+            .setNeutralButton("کپی گزارش") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("DANA diagnostic report", report))
+                status.text = "گزارش خطایابی کپی شد؛ می‌توانی در چت جای‌گذاری کنی."
+            }
+            .setNegativeButton("بستن", null)
+            .show()
     }
 
     private fun updateConversationButton() {
@@ -293,9 +340,11 @@ class MainActivity : Activity() {
         // Private mode is local-only. Offline Vosk also works in ordinary mode when
         // the user has not consented to speech-provider processing.
         if (voskInstalled && (memory.privateMode || !memory.microphoneDisclosureAccepted)) {
+            DiagnosticEvents.record(this, "SPEECH_START", "VOSK_LOCAL")
             status.text = "در حال بارگذاری موتور فارسی آفلاین…"
             offlineSpeech.listen(root)
         } else {
+            DiagnosticEvents.record(this, "SPEECH_START", if (memory.privateMode) "ANDROID_LOCAL" else "ANDROID_PROVIDER")
             status.text = "در انتظار صدای فارسی…"
             speech.listen(allowOnline = !memory.privateMode && memory.microphoneDisclosureAccepted)
         }
@@ -345,6 +394,7 @@ class MainActivity : Activity() {
     }
 
     private fun receiveSpeech(phrase: String) {
+        DiagnosticEvents.record(this, "COMMAND_RECEIVED") // Never record phrase itself.
         relistenAfterResponse = memory.conversationMode && state == DialogState.COMMAND
         heard.text = "شنیدم: $phrase"
         status.text = "در حال پردازش…"
@@ -561,6 +611,7 @@ class MainActivity : Activity() {
                 DanaAction.ReminderList -> listReminders()
                 is DanaAction.PrivateMode -> {
                     memory.privateMode = action.enabled
+                    if (!action.enabled) DiagnosticEvents.record(this, "PRIVATE_MODE_OFF")
                     // Privacy mode must disable network processing, NOT disable local Vosk.
                     speech.cancel()
                     offlineSpeech.cancel()
@@ -582,13 +633,16 @@ class MainActivity : Activity() {
                 }
                 is DanaAction.Unknown -> {
                     say("این فرمان هنوز در موتور آفلاین دانا شناخته نمی‌شه. می‌تونی کوتاه‌تر بگی یا بگی راهنما تا فرمان‌های قابل اجرا رو بگم.")
+                    DiagnosticEvents.record(this, "COMMAND_UNKNOWN")
                     logAction("UNKNOWN", "unsupported", (System.nanoTime() - start) / 1_000_000)
                     return
                 }
             }
             // Dispatch is not proof that an external application completed its work.
+            DiagnosticEvents.record(this, "ACTION_DISPATCHED", type.uppercase(Locale.ROOT))
             logAction(type, "dispatched", (System.nanoTime() - start) / 1_000_000)
         } catch (e: Exception) {
+            DiagnosticEvents.record(this, "ACTION_ERROR", type.uppercase(Locale.ROOT))
             logAction(type, "error", (System.nanoTime() - start) / 1_000_000)
             say("عملیات انجام نشد: ${e.localizedMessage ?: "دسترسی یا برنامه لازم موجود نیست"}")
         }
@@ -658,6 +712,7 @@ class MainActivity : Activity() {
     }
 
     private fun stopWakeService() {
+        DiagnosticEvents.record(this, "WAKE_STOP_REQUEST")
         memory.wakeAutoResume = false
         stopService(Intent(this, DanaWakeService::class.java))
         // The service itself clears its running flag in onDestroy.
@@ -717,6 +772,7 @@ class MainActivity : Activity() {
     }
 
     private fun startWakeService() {
+        DiagnosticEvents.record(this, "WAKE_START_REQUEST")
         try {
             // Vosk models can consume hundreds of MB. Do not keep a second Activity model
             // loaded while the always-on wake service initializes its own instance.
@@ -732,6 +788,7 @@ class MainActivity : Activity() {
             pollWakeReady(0)
         } catch (_: RuntimeException) {
             memory.wakeAutoResume = false
+            DiagnosticEvents.record(this, "WAKE_START_ERROR", "ANDROID_REJECTED")
             // Android 12+ and some OEMs can reject foreground microphone startup.
             say("سیستم اجازه شروع بیدارباش نداد؛ برنامه باید باز باشد و مجوز میکروفون فعال باشد.")
             updateWakeButton()
@@ -744,11 +801,13 @@ class MainActivity : Activity() {
         val failure = runtime.getString("last_stop_reason", null)
         when {
             !failure.isNullOrBlank() -> {
+                DiagnosticEvents.record(this, "WAKE_FAILED", DiagnosticEventRules.failureCategory(failure))
                 status.text = "بیدارباش فعال نشد: $failure"
                 answer.text = "دانا: $failure"
                 updateWakeButton()
             }
             runtime.getBoolean("ready", false) -> {
+                DiagnosticEvents.record(this, "WAKE_READY")
                 status.text = "بیدارباش فارسی فعال است؛ بگو «دانا»."
                 updateWakeButton()
             }
@@ -770,6 +829,7 @@ class MainActivity : Activity() {
         val uri = data?.data ?: return
         if (installingWakeModel) return
         installingWakeModel = true
+        DiagnosticEvents.record(this, "MODEL_IMPORT_START")
         offlineSpeech.releaseModel()
         status.text = "در حال خواندن ZIP فارسی… برنامه را باز نگه دار."
         answer.text = "دانا: استخراج مدل ممکن است چند دقیقه طول بکشد؛ پیشرفت را همین‌جا می‌بینی."
@@ -792,9 +852,12 @@ class MainActivity : Activity() {
                 installingWakeModel = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (result.isSuccess) {
+                    DiagnosticEvents.record(this, "MODEL_IMPORT_OK")
                     status.text = "مدل فارسی با موفقیت نصب شد. حالا بیدارباش یا میکروفون را امتحان کن."
                     say("مدل فارسی Vosk نصب شد. حالا در حالت خصوصی هم می‌تونم فرمان آفلاین بشنوم.")
                 } else {
+                    DiagnosticEvents.record(this, "MODEL_IMPORT_FAILED",
+                        result.exceptionOrNull()?.javaClass?.simpleName?.uppercase(Locale.ROOT) ?: "UNKNOWN")
                     val reason = result.exceptionOrNull()?.localizedMessage ?: "ZIP نامعتبر"
                     status.text = "نصب مدل ناموفق بود: $reason"
                     answer.text = "دانا: نصب مدل ناموفق بود: $reason"

@@ -7,7 +7,7 @@ import hashlib
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
-output = root.parent / "DANA-Android-v1.8-Offline-VoiceFix-FULL-SOURCE.zip"
+output = root.parent / "DANA-Android-v1.9-Offline-Diagnostics-FULL-SOURCE.zip"
 excluded_names = {".git", ".gradle", ".idea", "build", "__pycache__", ".DS_Store",
                   "local.properties", ".env", "gradle-wrapper.jar", "*.keystore", "*.jks", "google-services.json"}
 
