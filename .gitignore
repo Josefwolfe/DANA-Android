@@ -12,3 +12,6 @@ google-services.json
 **/__pycache__/
 *.pyc
 app/release/
+
+# Pinned whisper.cpp source fetched during CI; do not commit vendored checkout
+app/src/main/cpp/whisper.cpp/

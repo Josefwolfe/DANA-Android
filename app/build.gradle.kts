@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "1.9.6-android-ondevice-offline-beta"
+        versionCode = 26
+        versionName = "1.9.7-whisper-offline-beta"
     }
 
     compileOptions {
@@ -51,6 +51,16 @@ android {
         }
     }
 
+    ndkVersion = "27.2.12479018"
+    defaultConfig {
+        ndk { abiFilters += listOf("arm64-v8a") }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     lint {
         abortOnError = true
         checkReleaseBuilds = true

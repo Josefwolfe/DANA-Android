@@ -26,7 +26,7 @@ object WakeSpeechProbe {
     fun capture(text: String, engine: String = "VOSK_LOCAL") {
         if (enabled()) {
             last = text.take(180)
-            lastEngine = if (engine == "ANDROID_ON_DEVICE") engine else "VOSK_LOCAL"
+            lastEngine = if (engine == "ANDROID_ON_DEVICE" || engine == "WHISPER_LOCAL") engine else "VOSK_LOCAL"
         } else if (expiresAt != 0L) disable()
     }
     fun report(): String = if (enabled()) {

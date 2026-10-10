@@ -55,6 +55,7 @@ class DanaWakeService : Service() {
     }
     private var voice: DanaVoice? = null
     private var commandSpeech: SpeechManager? = null
+    private var whisperSpeech: WhisperCommandRecognizer? = null
     private var onDeviceUnavailableForSession = false
     private var stage = "init" // init, wake, reply, command_on_device, fallback_pending, command_offline, paused, closed
     private val uiHandoffTimeout = Runnable {
@@ -116,8 +117,9 @@ class DanaWakeService : Service() {
         override fun run() {
             if (stopped) return
             if (audio.mode == AudioManager.MODE_IN_CALL || audio.mode == AudioManager.MODE_IN_COMMUNICATION) {
-                if (stage == "wake" || stage == "command_offline" || stage == "command_online" || stage == "command_on_device" || stage == "fallback_pending") {
+                if (stage == "wake" || stage == "command_offline" || stage == "command_online" || stage == "command_on_device" || stage == "command_whisper" || stage == "fallback_pending") {
                     commandSpeech?.cancel()
+                    whisperSpeech?.cancel()
                     main.removeCallbacks(onlineTimeout)
                     closeRecognizer()
                     stage = "paused"
@@ -170,6 +172,7 @@ class DanaWakeService : Service() {
         aliveInProcess = true
         DiagnosticEvents.record(this, "WAKE_SERVICE_CREATED")
         voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
+        whisperSpeech = WhisperCommandRecognizer(this)
         commandSpeech = SpeechManager(this,
             onResult = { phrase -> main.post {
                 if (!stopped && (stage == "command_on_device" || stage == "command_online")) {
@@ -226,7 +229,7 @@ class DanaWakeService : Service() {
                 startWakeRecognition()
             }
             updateNotification(if (UserMemory(this).privateMode)
-                "حالت خصوصی: بیدارباش و فرمان‌ها فقط با Vosk محلی" else
+                "حالت خصوصی: بیدارباش و فرمان‌ها فقط با موتورهای آفلاین" else
                 "بیدارباش فعال؛ آماده دریافت «دانا»")
             return START_NOT_STICKY
         }
@@ -276,6 +279,7 @@ class DanaWakeService : Service() {
         main.removeCallbacks(uiHandoffTimeout)
         main.removeCallbacks(responseWatchdog)
         commandCollector.reset()
+        whisperSpeech?.cancel()
         commandSpeech?.close()
         closeRecognizer()
         try {
@@ -300,14 +304,59 @@ class DanaWakeService : Service() {
      * model is missing, return to local Vosk and report the failure without network use. */
     private fun startCommandRecognition() {
         if (stopped) return
+        val whisperRoot = getDir(WhisperModelInstaller.DIR, MODE_PRIVATE)
+        if (WhisperModelInstaller.installed(whisperRoot) && WhisperNative.available) {
+            startCommandRecognitionWhisper(WhisperModelInstaller.model(whisperRoot))
+            return
+        }
         val available = commandSpeech?.hasOnDeviceRecognizer() == true
         if (WakeAsrRoutingPolicy.useAndroidOnDevice(Build.VERSION.SDK_INT,
                 available, onDeviceUnavailableForSession)) startCommandRecognitionOnDevice()
         else startCommandRecognitionOffline()
     }
 
+    private fun startCommandRecognitionWhisper(modelFile: java.io.File) {
+        if (stopped) return
+        main.removeCallbacks(finishCommandAfterSilence)
+        main.removeCallbacks(onlineTimeout)
+        commandCollector.reset()
+        commandSpeech?.close()
+        closeRecognizer() // Vosk must release microphone before Whisper AudioRecord starts.
+        stage = "command_whisper"
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+        WakeSessionMetrics.commandWindow()
+        WhisperMetrics.start()
+        DiagnosticEvents.record(this, "WAKE_COMMAND_START", "WHISPER_LOCAL")
+        updateNotification("Whisper آفلاین آماده است؛ فرمان فارسی را بگو")
+        whisperSpeech?.start(modelFile,
+            onStatus = { message -> if (!stopped && stage == "command_whisper") updateNotification(message) },
+            onResult = { phrase ->
+                if (!stopped && stage == "command_whisper") {
+                    WhisperMetrics.success()
+                    WakeSessionMetrics.commandCaptured()
+                    WakeSpeechProbe.capture(phrase, "WHISPER_LOCAL")
+                    DiagnosticEvents.record(this, "WAKE_COMMAND_HEARD", "WHISPER_LOCAL")
+                    stage = "reply"
+                    handleCommand(phrase)
+                }
+            },
+            onError = { message ->
+                if (!stopped && stage == "command_whisper") {
+                    WhisperMetrics.failure()
+                    DiagnosticEvents.record(this, "WHISPER_COMMAND_FAILED", "VOSK_FALLBACK")
+                    stage = "fallback_pending"
+                    updateNotification("$message؛ بعد از بوق دوباره فرمان را بگو")
+                    wakeAcknowledgement()
+                    main.postDelayed({
+                        if (!stopped && stage == "fallback_pending") startCommandRecognitionOffline(false)
+                    }, 220L)
+                }
+            })
+    }
+
     private fun startCommandRecognitionOnDevice() {
         if (stopped) return
+        whisperSpeech?.cancel()
         main.removeCallbacks(finishCommandAfterSilence)
         commandCollector.reset()
         closeRecognizer() // Vosk must release microphone before Android on-device starts.
@@ -342,6 +391,7 @@ class DanaWakeService : Service() {
 
     private fun startCommandRecognitionOffline(countWindow: Boolean = true) {
         if (stopped) return
+        whisperSpeech?.cancel()
         main.removeCallbacks(onlineTimeout)
         stage = "command_offline" // Set before cancelling online recognition callbacks.
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
@@ -839,6 +889,7 @@ class DanaWakeService : Service() {
         main.removeCallbacksAndMessages(null)
         commandCollector.reset()
         commandSpeech?.close(); commandSpeech = null
+        whisperSpeech?.close(); whisperSpeech = null
         closeRecognizer(); model?.close(); model = null
         voice?.close(); voice = null
         worker.shutdownNow()

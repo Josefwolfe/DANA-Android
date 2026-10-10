@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.6-android-ondevice-offline-beta"' in app_gradle and 'versionCode = 25' in app_gradle
+assert 'versionName = "1.9.7-whisper-offline-beta"' in app_gradle and 'versionCode = 26' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.6-android-ondevice-offline-beta"' in app_gradle and 'versionCode = 25' in app_gradle
+assert 'versionName = "1.9.7-whisper-offline-beta"' in app_gradle and 'versionCode = 26' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -223,7 +223,7 @@ assert 'کنم|کنی|کنه' in engine
 assert '"بیار", "روشن"' in engine
 assert '"TORCH_SET_REQUESTED"' in wake and '"TORCH_SET_FAILED"' in wake
 assert '"TORCH_SET_FAILED"' in (pkg / 'WakeExecutionMetrics.kt').read_text()
-assert 'DANA 1.9.6 OfflineSpeechHybrid' in (main / 'res/layout/activity_main.xml').read_text()
+assert 'DANA 1.9.7 WhisperOfflineHybrid' in (main / 'res/layout/activity_main.xml').read_text()
 print('PASS: v1.9.5 safe Persian command aliases, camera launch, torch diagnostics and version label.')
 
 # v1.9.6: explicitly on-device Android recognition after Vosk wake, with local fallback.
@@ -235,3 +235,20 @@ assert 'WakeAsrMetrics.report()' in (pkg / 'DiagnosticReport.kt').read_text()
 assert 'if (!allowOnline && !hasOnDeviceRecognizer())' in (pkg / 'SpeechManager.kt').read_text()
 assert 'recognizer = if (!allowOnline)' in (pkg / 'SpeechManager.kt').read_text()
 print('PASS: v1.9.6 strict on-device offline command path, Vosk fallback and safe diagnostics.')
+
+# v1.9.7: real offline Whisper C++ bridge and explicit opt-in model import.
+assert (pkg / 'WhisperNative.kt').is_file()
+assert (pkg / 'WhisperModelInstaller.kt').is_file()
+assert (pkg / 'WhisperCommandRecognizer.kt').is_file()
+assert (root / 'app/src/main/cpp/whisper_jni.cpp').is_file()
+assert (root / 'app/src/main/cpp/CMakeLists.txt').is_file()
+assert (root / 'scripts/fetch_whisper_cpp.sh').is_file()
+assert 'startCommandRecognitionWhisper(' in wake
+assert 'WhisperModelInstaller.installed' in wake
+assert 'WhisperMetrics.report()' in (pkg / 'DiagnosticReport.kt').read_text()
+assert 'importWhisperModelButton' in (main / 'res/layout/activity_main.xml').read_text()
+assert 'importWhisperModel()' in (pkg / 'MainActivity.kt').read_text()
+assert 'externalNativeBuild' in app_gradle
+for wf in ('android-debug.yml', 'android-release.yml'):
+    assert 'fetch_whisper_cpp.sh' in (root / '.github/workflows' / wf).read_text()
+print('PASS: v1.9.7 pinned Whisper JNI build, model import and offline command routing.')

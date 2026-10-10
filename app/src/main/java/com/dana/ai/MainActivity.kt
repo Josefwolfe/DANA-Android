@@ -93,6 +93,7 @@ class MainActivity : Activity() {
     private lateinit var speech: SpeechManager
     private lateinit var offlineSpeech: OfflineSpeechManager
     private var installingWakeModel = false
+    private var installingWhisperModel = false
     private lateinit var testLog: TestLog
     private lateinit var personalStore: PersonalStore
     private lateinit var reminderStore: ReminderStore
@@ -254,6 +255,7 @@ class MainActivity : Activity() {
         wakeButton = findViewById(R.id.wakeButton)
         wakeButton.setOnClickListener { toggleWakeMode() }
         findViewById<Button>(R.id.importWakeModelButton).setOnClickListener { importWakeModel() }
+        findViewById<Button>(R.id.importWhisperModelButton).setOnClickListener { importWhisperModel() }
         findViewById<Button>(R.id.aiSettingsButton).setOnClickListener { showCloudAiSettings() }
         updateWakeButton()
 
@@ -794,16 +796,38 @@ class MainActivity : Activity() {
             }.setNegativeButton("انصراف", null).show()
     }
 
+    private fun importWhisperModel() {
+        if (installingWhisperModel) { status.text = "نصب Whisper هنوز در حال انجام است."; return }
+        if (DanaWakeService.running(this)) {
+            status.text = "برای نصب مدل Whisper، ابتدا بیدارباش را متوقف کن."
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("نصب Whisper فارسی آفلاین")
+            .setMessage("مدل چندزبانه ggml-tiny.bin یا ggml-base.bin را از مدل‌های رسمی whisper.cpp دانلود کن (مدل‌های .en فقط انگلیسی هستند). این فایل چند ده تا بیش از صد مگابایت است. سپس همین فایل BIN را انتخاب کن؛ به حافظه خصوصی دانا کپی می‌شود. صدا به اینترنت ارسال نخواهد شد.")
+            .setPositiveButton("انتخاب مدل BIN") { _, _ ->
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                startActivityForResult(intent, 710)
+            }
+            .setNeutralButton("مدل‌های رسمی") { _, _ ->
+                safeLaunch(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://huggingface.co/ggerganov/whisper.cpp/tree/main")))
+            }.setNegativeButton("انصراف", null).show()
+    }
+
     private fun toggleWakeMode() {
         if (DanaWakeService.running(this)) { stopWakeService(); return }
-        if (installingWakeModel) { say("صبر کن نصب مدل کامل بشه."); return }
+        if (installingWakeModel || installingWhisperModel) { say("صبر کن نصب مدل کامل بشه."); return }
         val modelDirectory = getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
         if (!WakeModelInstaller.installed(modelDirectory)) {
             say("اول مدل کوچک فارسی را از فایل ZIP نصب کن."); return
         }
         AlertDialog.Builder(this)
             .setTitle("فعال‌سازی بیدارباش بدون دکمه")
-            .setMessage("یک‌بار این حالت را روشن کن؛ بعد با گفتن «دانا» یا «سلام دانا» فرمان بده. میکروفون در سرویس پیش‌زمینه با اعلان دائمی فعال می‌ماند و مصرف باتری افزایش می‌یابد. اگر HyperOS سرویس را ببندد، شنود قطع می‌شود. هنگام باز کردن دوباره دانا، در صورت داشتن مجوز، حالت شنود از سر گرفته می‌شود؛ پس از بوت، شروع میکروفون در پس‌زمینه مجاز نیست. برای تشخیص دقیق‌تر فرمان‌ها، اجازه پردازش آنلاین را جداگانه تأیید کن.")
+            .setMessage("یک‌بار این حالت را روشن کن؛ بعد با گفتن «دانا» یا «سلام دانا» فرمان بده. میکروفون در سرویس پیش‌زمینه با اعلان دائمی فعال می‌ماند و مصرف باتری افزایش می‌یابد. اگر HyperOS سرویس را ببندد، شنود قطع می‌شود. در صورت نصب مدل چندزبانه Whisper، فرمان‌ها پس از بوق به صورت آفلاین با آن تشخیص داده می‌شوند. بدون مدل، موتور آفلاین اندروید یا Vosk استفاده می‌شود. شروع خودکار میکروفون پس از بوت مجاز نیست.")
             .setNegativeButton("انصراف", null)
             .setPositiveButton("فعال کن") { _, _ ->
                 val run = {
@@ -881,6 +905,40 @@ class MainActivity : Activity() {
     @Deprecated("Android activity-result API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 710 && resultCode == RESULT_OK) {
+            val selected = data?.data ?: return
+            if (installingWhisperModel || DanaWakeService.running(this)) return
+            installingWhisperModel = true
+            status.text = "در حال کپی مدل Whisper به حافظه خصوصی…"
+            Thread {
+                val result = runCatching {
+                    (contentResolver.openInputStream(selected) ?: error("فایل مدل خوانده نشد")).use { source ->
+                        WhisperModelInstaller.install(source,
+                            getDir(WhisperModelInstaller.DIR, Context.MODE_PRIVATE)) { bytes ->
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed)
+                                    status.text = "نصب Whisper: ${bytes / (1024 * 1024)} مگابایت"
+                            }
+                        }
+                    }
+                    WhisperNative.release() // Never keep the old model after a new BIN import.
+                }
+                runOnUiThread {
+                    installingWhisperModel = false
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (result.isSuccess) {
+                        status.text = "مدل Whisper نصب شد. بعد از بوق فرمان با Whisper آفلاین شنیده می‌شود."
+                        answer.text = "دانا: برای آزمایش بیدارباش را روشن کن و بگو دانا، سپس ساعت چنده؟"
+                    } else {
+                        status.text = "نصب Whisper ناموفق بود."
+                        AlertDialog.Builder(this).setTitle("مدل Whisper نصب نشد")
+                            .setMessage(result.exceptionOrNull()?.localizedMessage ?: "فایل BIN نامعتبر است")
+                            .setPositiveButton("بستن", null).show()
+                    }
+                }
+            }.start()
+            return
+        }
         if (requestCode != 709 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         if (installingWakeModel) return
