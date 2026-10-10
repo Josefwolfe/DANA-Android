@@ -59,6 +59,8 @@ class MainActivity : Activity() {
     private lateinit var finder: ContactFinder
     private lateinit var voice: DanaVoice
     private lateinit var speech: SpeechManager
+    private lateinit var offlineSpeech: OfflineSpeechManager
+    private var installingWakeModel = false
     private lateinit var testLog: TestLog
     private lateinit var personalStore: PersonalStore
     private lateinit var reminderStore: ReminderStore
@@ -111,14 +113,33 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.voiceSettingsButton).setOnClickListener { showPersianVoices() }
 
+        offlineSpeech = OfflineSpeechManager(
+            onResult = { phrase -> if (appVisible) receiveSpeech(phrase) },
+            onStatus = { message -> if (appVisible) status.text = message },
+            onError = { message -> if (appVisible) {
+                relistenAfterResponse = false
+                status.text = message
+                answer.text = "دانا: $message"
+                if (::voice.isInitialized && voice.isReady()) voice.speak(message)
+            } })
         speech = SpeechManager(this,
             onResult = { phrase -> runOnUiThread { receiveSpeech(phrase) } },
             onStatus = { value -> runOnUiThread { status.text = value } },
             onError = { error -> runOnUiThread {
-                relistenAfterResponse = false // Never loop on a recognition error.
-                status.text = error
-                answer.text = "دانا: $error"
-                if (::voice.isInitialized && voice.isReady()) voice.speak(error)
+                if (!appVisible) return@runOnUiThread
+                // Android speech services may lack the Persian language pack. Use the user's
+                // imported Vosk model instead of reporting a dead end.
+                val root = getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
+                if ((error.contains("زبان فارسی") || error.contains("بسته تشخیص فارسی")) &&
+                    WakeModelInstaller.installed(root) && !offlineSpeech.isActive()) {
+                    speech.close()
+                    offlineSpeech.listen(root)
+                } else {
+                    relistenAfterResponse = false // Never loop on a recognition error.
+                    status.text = error
+                    answer.text = "دانا: $error"
+                    if (::voice.isInitialized && voice.isReady()) voice.speak(error)
+                }
             } })
         voice = DanaVoice(this) { available ->
             if (!available) {
@@ -239,17 +260,25 @@ class MainActivity : Activity() {
     }
 
     private fun requestMicAndListen() {
-        // On older devices recognition can be server-backed. Private mode must not claim offline
-        // privacy unless Android offers a verified on-device recognizer (and Persian is installed).
-        if (memory.privateMode && !speech.hasOnDeviceRecognizer()) {
-            say("در حالت خصوصی، تشخیص صوتی محلی روی این گوشی در دسترس نیست. فرمان رو تایپ کن.")
+        val root = getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
+        val voskInstalled = WakeModelInstaller.installed(root)
+        if (installingWakeModel) {
+            say("مدل فارسی هنوز در حال نصب است؛ کمی صبر کن.")
             return
         }
-        // The default Android recognizer may send speech to its provider; always ask consent
-        // before allowing it, even if an unrelated on-device recognizer is available.
-        if (!memory.privateMode && !memory.microphoneDisclosureAccepted) {
+        if (DanaWakeService.running(this)) {
+            say("بیدارباش دانا روشن است. بدون زدن دکمه بگو دانا و بعد فرمانت رو بگو؛ یا اول بیدارباش رو خاموش کن.")
+            return
+        }
+        if (memory.privateMode && !voskInstalled && !speech.hasOnDeviceRecognizer()) {
+            say("در حالت خصوصی باید مدل فارسی Vosk رو نصب کنی؛ بسته آفلاین اندروید روی گوشی در دسترس نیست.")
+            return
+        }
+        // Vosk runs fully on device. Only ask for online speech-provider consent when
+        // neither a local model nor the Android on-device recognizer can be used.
+        if (!memory.privateMode && !memory.microphoneDisclosureAccepted && !voskInstalled) {
             AlertDialog.Builder(this).setTitle("حریم خصوصی تشخیص صوتی")
-                .setMessage("موتور تشخیص گفتار این گوشی ممکن است صدا را برای پردازش به سرویس شرکت سازنده ارسال کند. دانا ضبط دائمی انجام نمی‌دهد. برای تشخیص کاملاً آفلاین باید مدل و موتور مناسب روی گوشی نصب شده باشد. می‌خواهی ادامه بدهی؟")
+                .setMessage("موتور گفتار گوشی ممکن است صدا را برای پردازش ارسال کند. برای فرمان کاملاً آفلاین، مدل فارسی Vosk را از ZIP نصب کن. اجازه استفاده از موتور گوشی را می‌دهی؟")
                 .setNegativeButton("فعلاً نه", null)
                 .setPositiveButton("اجازه می‌دهم") { _, _ ->
                     memory.microphoneDisclosureAccepted = true
@@ -257,18 +286,18 @@ class MainActivity : Activity() {
                 }.show()
             return
         }
-        // Never let Android SpeechRecognizer and Vosk capture the microphone simultaneously.
-        if (DanaWakeService.running(this)) {
-            stopWakeService()
-            status.text = "بیدارباش متوقف شد؛ برای فعال‌سازی مجدد، حالت «دانا» را روشن کن."
-            window.decorView.postDelayed({ if (appVisible) requestMicAndListen() }, 650L)
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 401)
             return
         }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+        // Private mode is local-only. Offline Vosk also works in ordinary mode when
+        // the user has not consented to speech-provider processing.
+        if (voskInstalled && (memory.privateMode || !memory.microphoneDisclosureAccepted)) {
+            status.text = "در حال بارگذاری موتور فارسی آفلاین…"
+            offlineSpeech.listen(root)
+        } else {
             status.text = "در انتظار صدای فارسی…"
             speech.listen(allowOnline = !memory.privateMode && memory.microphoneDisclosureAccepted)
-        } else {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 401)
         }
     }
 
@@ -532,10 +561,16 @@ class MainActivity : Activity() {
                 DanaAction.ReminderList -> listReminders()
                 is DanaAction.PrivateMode -> {
                     memory.privateMode = action.enabled
-                    if (action.enabled && DanaWakeService.running(this)) stopWakeService()
+                    // Privacy mode must disable network processing, NOT disable local Vosk.
+                    speech.cancel()
+                    offlineSpeech.cancel()
+                    if (DanaWakeService.running(this)) {
+                        startService(Intent(this, DanaWakeService::class.java)
+                            .setAction(DanaWakeService.ACTION_PRIVACY_CHANGED))
+                    }
                     refreshModes()
-                    say(if (action.enabled) "حالت خصوصی روشن شد؛ گزارش و یادگیری جدید ذخیره نمی شن. یادآوری هایی که خودت بسازی برای اعلان ذخیره می شن."
-                        else "حالت خصوصی خاموش شد.")
+                    say(if (action.enabled) "حالت خصوصی روشن شد. فرمان‌ها با مدل Vosk فقط روی گوشی پردازش می‌شن؛ هوش مصنوعی آنلاین، گزارش و یادگیری خاموش هستند."
+                        else "حالت خصوصی خاموش شد؛ بیدارباش آفلاین همچنان در دسترس است.")
                 }
                 is DanaAction.LearningMode -> {
                     memory.learningEnabled = action.enabled
@@ -546,7 +581,7 @@ class MainActivity : Activity() {
                     say(if (action.style == "short") "از این به بعد کوتاه تر جواب می دم." else "لحن پاسخ رو دوستانه تنظیم کردم.")
                 }
                 is DanaAction.Unknown -> {
-                    say("${friendlyName()}، این جمله رو به فرمان قابل اجرا تبدیل نکردم. با عبارت کوتاه‌تر دوباره بگو؛ برای فهم عبارت‌های متنوع‌تر، اتصال اختیاری هوش مصنوعی رو در تنظیمات فعال کن.")
+                    say("این فرمان هنوز در موتور آفلاین دانا شناخته نمی‌شه. می‌تونی کوتاه‌تر بگی یا بگی راهنما تا فرمان‌های قابل اجرا رو بگم.")
                     logAction("UNKNOWN", "unsupported", (System.nanoTime() - start) / 1_000_000)
                     return
                 }
@@ -630,6 +665,7 @@ class MainActivity : Activity() {
     }
 
     private fun importWakeModel() {
+        if (installingWakeModel) { say("نصب مدل هنوز تمام نشده؛ صبر کن."); return }
         if (DanaWakeService.running(this)) {
             say("قبل از تعویض مدل، بیدارباش را متوقف کن."); return
         }
@@ -649,10 +685,7 @@ class MainActivity : Activity() {
 
     private fun toggleWakeMode() {
         if (DanaWakeService.running(this)) { stopWakeService(); return }
-        if (memory.privateMode) {
-            say("برای فعال‌سازی آزمایشی شنود، ابتدا حالت خصوصی را خاموش کن.")
-            return
-        }
+        if (installingWakeModel) { say("صبر کن نصب مدل کامل بشه."); return }
         val modelDirectory = getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)
         if (!WakeModelInstaller.installed(modelDirectory)) {
             say("اول مدل کوچک فارسی را از فایل ZIP نصب کن."); return
@@ -670,7 +703,7 @@ class MainActivity : Activity() {
                         askPermission(Manifest.permission.POST_NOTIFICATIONS, 408, afterNotification)
                     else afterNotification()
                 }
-                if (!memory.microphoneDisclosureAccepted) {
+                if (!memory.privateMode && !memory.microphoneDisclosureAccepted) {
                     AlertDialog.Builder(this).setTitle("تشخیص فرمان پس از «دانا»")
                         .setMessage("برای فهم بهتر فارسی می‌توان از موتور تشخیص گفتار گوشی استفاده کرد که ممکن است صدا را به سرویس ارائه‌دهنده بفرستد. خود کلمه بیدارباش با مدل آفلاین تشخیص داده می‌شود. کدام حالت را انتخاب می‌کنی؟")
                         .setPositiveButton("اجازه تشخیص آنلاین") { _, _ ->
@@ -685,12 +718,18 @@ class MainActivity : Activity() {
 
     private fun startWakeService() {
         try {
+            // Vosk models can consume hundreds of MB. Do not keep a second Activity model
+            // loaded while the always-on wake service initializes its own instance.
+            offlineSpeech.releaseModel()
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
+                .remove("last_stop_reason").putBoolean("ready", false).apply()
             val request = Intent(this, DanaWakeService::class.java).setAction(DanaWakeService.ACTION_START)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(request)
             else startService(request)
             memory.wakeAutoResume = true
             status.text = "در حال بارگذاری مدل فارسی… وضعیت را در اعلان دانا ببین."
             window.decorView.postDelayed({ updateWakeButton() }, 700)
+            pollWakeReady(0)
         } catch (_: RuntimeException) {
             memory.wakeAutoResume = false
             // Android 12+ and some OEMs can reject foreground microphone startup.
@@ -699,22 +738,70 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pollWakeReady(attempt: Int) {
+        if (!appVisible || attempt > 100) return
+        val runtime = getSharedPreferences("wake_runtime", MODE_PRIVATE)
+        val failure = runtime.getString("last_stop_reason", null)
+        when {
+            !failure.isNullOrBlank() -> {
+                status.text = "بیدارباش فعال نشد: $failure"
+                answer.text = "دانا: $failure"
+                updateWakeButton()
+            }
+            runtime.getBoolean("ready", false) -> {
+                status.text = "بیدارباش فارسی فعال است؛ بگو «دانا»."
+                updateWakeButton()
+            }
+            attempt > 10 && !runtime.getBoolean("running", false) -> {
+                status.text = "سرویس بیدارباش متوقف شده؛ مجوز میکروفون و تنظیمات باتری را بررسی کن."
+                updateWakeButton()
+            }
+            else -> {
+                status.text = "مدل فارسی Vosk در حال بارگذاری است… ${attempt + 1} ثانیه"
+                window.decorView.postDelayed({ pollWakeReady(attempt + 1) }, 1_000L)
+            }
+        }
+    }
+
     @Deprecated("Android activity-result API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != 709 || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
-        status.text = "در حال استخراج مدل؛ برنامه را باز نگه دار…"
+        if (installingWakeModel) return
+        installingWakeModel = true
+        offlineSpeech.releaseModel()
+        status.text = "در حال خواندن ZIP فارسی… برنامه را باز نگه دار."
+        answer.text = "دانا: استخراج مدل ممکن است چند دقیقه طول بکشد؛ پیشرفت را همین‌جا می‌بینی."
         Thread {
             val result = runCatching {
                 val source = contentResolver.openInputStream(uri) ?: error("خواندن ZIP ممکن نیست.")
-                source.use { WakeModelInstaller.install(it, getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)) }
+                source.use { input ->
+                    WakeModelInstaller.install(input,
+                        getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)) { progress ->
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                val mb = progress.extractedBytes / (1024L * 1024L)
+                                status.text = "${progress.stage} $mb مگابایت • ${progress.fileCount} فایل"
+                            }
+                        }
+                    }
+                }
             }
             runOnUiThread {
+                installingWakeModel = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                status.text = if (result.isSuccess) "مدل کوچک فارسی نصب شد." else
-                    "مدل نصب نشد: ${result.exceptionOrNull()?.localizedMessage ?: "ZIP نامعتبر"}"
-                if (result.isSuccess) say("مدل آفلاین نصب شد؛ حالا می‌تونی حالت آزمایشی بیدارباش رو فعال کنی.")
+                if (result.isSuccess) {
+                    status.text = "مدل فارسی با موفقیت نصب شد. حالا بیدارباش یا میکروفون را امتحان کن."
+                    say("مدل فارسی Vosk نصب شد. حالا در حالت خصوصی هم می‌تونم فرمان آفلاین بشنوم.")
+                } else {
+                    val reason = result.exceptionOrNull()?.localizedMessage ?: "ZIP نامعتبر"
+                    status.text = "نصب مدل ناموفق بود: $reason"
+                    answer.text = "دانا: نصب مدل ناموفق بود: $reason"
+                    AlertDialog.Builder(this).setTitle("خطای نصب مدل فارسی")
+                        .setMessage("$reason\n\nفایل مدل کوچک فارسی را از سایت رسمی Vosk دوباره دانلود کن. فایل ZIP را استخراج نکن؛ همان ZIP را انتخاب کن. فضای خالی گوشی را هم بررسی کن.")
+                        .setPositiveButton("متوجه شدم", null).show()
+                }
             }
         }.start()
     }
@@ -1222,7 +1309,7 @@ class MainActivity : Activity() {
         if (::wakeButton.isInitialized) updateWakeButton()
         // Android microphone foreground services must be started while the Activity is visible.
         // This is a best-effort opt-in resume, never a background/boot microphone launch.
-        if (memory.wakeAutoResume && !memory.privateMode && !DanaWakeService.running(this) &&
+        if (memory.wakeAutoResume && !DanaWakeService.running(this) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
             WakeModelInstaller.installed(getDir(DanaWakeService.MODEL_DIR, Context.MODE_PRIVATE)) &&
             getSharedPreferences("wake_runtime", MODE_PRIVATE).getString("last_stop_reason", null) == null) {
@@ -1250,11 +1337,13 @@ class MainActivity : Activity() {
         visibleNow = false
         relistenAfterResponse = false
         speech.cancel() // میکروفون نباید هنگام باز شدن برنامه دیگر باقی بماند.
+        offlineSpeech.releaseModel()
         super.onPause()
     }
     override fun onDestroy() {
         queuedPermissionAction = null
         speech.close()
+        offlineSpeech.close()
         voice.close()
         super.onDestroy()
     }

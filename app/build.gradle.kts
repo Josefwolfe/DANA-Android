@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.7.0-offline-beta"
+        versionCode = 18
+        versionName = "1.8.0-offline-voicefix-beta"
     }
 
     compileOptions {

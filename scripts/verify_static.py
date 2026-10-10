@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.7.0-offline-beta"' in app_gradle and 'versionCode = 17' in app_gradle
+assert 'versionName = "1.8.0-offline-voicefix-beta"' in app_gradle and 'versionCode = 18' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.7.0-offline-beta"' in app_gradle and 'versionCode = 17' in app_gradle
+assert 'versionName = "1.8.0-offline-voicefix-beta"' in app_gradle and 'versionCode = 18' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -148,3 +148,15 @@ for workflow in ('android-debug.yml', 'android-release.yml'):
 assert 'fetch_wrapper.py' in (root / 'scripts/build_apk.sh').read_text()
 assert 'command -v gradle' in (root / 'scripts/build_apk.sh').read_text()
 print('PASS: RC4 dialer-only calls, non-exported notification listener and wrapper-independent CI.')
+
+# v1.8 regression guards: private mode must not disable local Vosk listening.
+assert (pkg / 'OfflineSpeechManager.kt').is_file()
+activity = (pkg / 'MainActivity.kt').read_text()
+wake = (pkg / 'DanaWakeService.kt').read_text()
+assert 'offlineSpeech.listen(root)' in activity
+assert 'if (memory.privateMode && !voskInstalled' in activity
+assert 'ACTION_PRIVACY_CHANGED' in wake and 'ACTION_PRIVACY_CHANGED' in activity
+assert 'if (stopped || UserMemory(this).privateMode) return' not in wake
+assert 'modelLoadTimeout' in wake and 'last_stop_reason' in wake
+assert 'onProgress' in (pkg / 'WakeModelInstaller.kt').read_text()
+print('PASS: v1.8 local-only private speech, Vosk diagnostics and ZIP progress guards.')

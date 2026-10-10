@@ -1,3 +1,5 @@
+> **نسخه 1.8 Offline VoiceFix Beta:** [راهنمای ارتقا](UPGRADE_V1_8_VOICEFIX_FA.md) و [رفع اشکال Vosk و حالت خصوصی](docs/VOICE_TROUBLESHOOTING_V1_8_FA.md).
+
 > **نسخه 1.7 Offline Beta:** [راهنمای ارتقای آفلاین و نصب در GitHub](UPGRADE_V1_7_OFFLINE_FA.md).
 
 > **نسخه 1.6 Beta:** راهنمای قابلیت‌های جدید و محدودیت‌ها: [UPGRADE_V1_6_FA.md](UPGRADE_V1_6_FA.md).

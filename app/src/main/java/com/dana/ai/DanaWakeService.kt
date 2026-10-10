@@ -28,6 +28,7 @@ class DanaWakeService : Service(), RecognitionListener {
     companion object {
         const val ACTION_START = "com.dana.ai.START_WAKE"
         const val ACTION_STOP = "com.dana.ai.STOP_WAKE"
+        const val ACTION_PRIVACY_CHANGED = "com.dana.ai.WAKE_PRIVACY_CHANGED"
         const val ACTION_OPEN_COMMAND = "com.dana.ai.OPEN_WAKE_COMMAND"
         const val EXTRA_COMMAND = "wake_command"
         const val CHANNEL = "dana_wake_experimental"
@@ -47,6 +48,18 @@ class DanaWakeService : Service(), RecognitionListener {
     private var stage = "init" // init, wake, reply, command_online, command_offline, paused, closed
     private val onlineTimeout = Runnable {
         if (!stopped && stage == "command_online") startCommandRecognitionOffline()
+    }
+    private val modelLoadTimeout = Runnable {
+        if (!stopped && stage == "loading") {
+            failWake("بارگذاری مدل فارسی بیش از ۹۰ ثانیه طول کشید. فضای حافظه و سلامت ZIP را بررسی کن.")
+        }
+    }
+    private fun failWake(reason: String) {
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
+            .putBoolean("ready", false)
+            .putString("last_stop_reason", reason).apply()
+        updateNotification(reason)
+        stopSelf()
     }
     private var errors = 0
     private var stopped = false
@@ -126,7 +139,8 @@ class DanaWakeService : Service(), RecognitionListener {
         }
         powerReceiverRegistered = true
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
-            .putBoolean("running", true).remove("last_stop_reason").apply()
+            .putBoolean("running", true).putBoolean("ready", false)
+            .remove("last_stop_reason").apply()
         aliveInProcess = true
         voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
         commandSpeech = SpeechManager(this,
@@ -150,28 +164,42 @@ class DanaWakeService : Service(), RecognitionListener {
             UserMemory(this).wakeAutoResume = false
             stopSelf(); return START_NOT_STICKY
         }
-        if (UserMemory(this).privateMode) {
-            updateNotification("حالت خصوصی فعال است؛ شنود متوقف شد")
-            stopSelf(); return START_NOT_STICKY
+        if (intent?.action == ACTION_PRIVACY_CHANGED) {
+            // Stop any potentially online Android recognition immediately when private mode
+            // becomes active; the local Vosk wake service itself remains enabled.
+            if (stage == "command_online" || stage == "command_offline") {
+                commandSpeech?.cancel()
+                main.removeCallbacks(onlineTimeout)
+                startWakeRecognition()
+            }
+            updateNotification(if (UserMemory(this).privateMode)
+                "حالت خصوصی: بیدارباش و فرمان‌ها فقط با Vosk محلی" else
+                "بیدارباش فعال؛ آماده دریافت «دانا»")
+            return START_NOT_STICKY
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            updateNotification("اجازه میکروفون داده نشده؛ بیدارباش متوقف شد")
-            stopSelf(); return START_NOT_STICKY
+            failWake("اجازه میکروفون داده نشده؛ بیدارباش متوقف شد")
+            return START_NOT_STICKY
         }
         if (stage == "init") {
             val directory = getDir(MODEL_DIR, MODE_PRIVATE)
             if (!WakeModelInstaller.installed(directory)) {
-                updateNotification("ابتدا مدل کوچک فارسی را در تنظیمات دانا نصب کن")
-                stopSelf(); return START_NOT_STICKY
+                failWake("مدل فارسی نصب نیست یا فایل‌های اصلی آن ناقص‌اند؛ مدل ZIP را دوباره نصب کن.")
+                return START_NOT_STICKY
             }
             stage = "loading"
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", false).apply()
+            updateNotification("در حال بازکردن مدل فارسی Vosk… ممکن است کمی زمان ببرد")
+            main.postDelayed(modelLoadTimeout, 90_000L)
             worker.execute {
                 val loaded = runCatching { Model(directory.absolutePath) }
                 main.post {
                     if (stopped) { loaded.getOrNull()?.close(); return@post }
+                    main.removeCallbacks(modelLoadTimeout)
                     if (loaded.isFailure) {
-                        updateNotification("مدل صوتی بارگذاری نشد؛ آن را دوباره نصب کن")
-                        stopSelf()
+                        val reason = loaded.exceptionOrNull()?.localizedMessage?.take(180)
+                            ?: "ساختار فایل مدل ناقص است"
+                        failWake("مدل فارسی Vosk باز نشد: $reason")
                     } else {
                         model = loaded.getOrNull()
                         startWakeRecognition()
@@ -194,8 +222,9 @@ class DanaWakeService : Service(), RecognitionListener {
             recognition = SpeechService(recognizer, 16000.0f).also { it.startListening(this) }
             this.recognizer = recognizer
             stage = "wake"
+            getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("ready", true).apply()
             updateNotification("فعال: منتظر «دانا» • برای توقف، اعلان را باز کن")
-        } catch (_: Exception) { recoverOrStop() }
+        } catch (e: Exception) { recoverOrStop("Vosk در بیدارباش خطا داد: ${e.localizedMessage ?: "خطا"}") }
     }
 
     /** Use the default Persian recognizer only after separate consent; otherwise Vosk. */
@@ -221,7 +250,7 @@ class DanaWakeService : Service(), RecognitionListener {
             recognition = SpeechService(next, 16000.0f).also { it.startListening(this, 8500) }
             recognizer = next
             updateNotification("فرمان فارسی آفلاین را بگو…")
-        } catch (_: Exception) { recoverOrStop() }
+        } catch (e: Exception) { recoverOrStop("Vosk در تشخیص فرمان خطا داد: ${e.localizedMessage ?: "خطا"}") }
     }
 
     override fun onResult(hypothesis: String?) {
@@ -231,7 +260,7 @@ class DanaWakeService : Service(), RecognitionListener {
     }
 
     private fun processHypothesis(hypothesis: String?) {
-        if (stopped || UserMemory(this).privateMode) return
+        if (stopped) return
         val text = runCatching { JSONObject(hypothesis ?: "{}").optString("text").trim() }.getOrDefault("")
         if (text.isBlank()) return
         when (stage) {
@@ -258,7 +287,8 @@ class DanaWakeService : Service(), RecognitionListener {
         if (!stopped && stage == "command_offline") startWakeRecognition()
     } }
     override fun onError(e: Exception?) { main.post {
-        if (!stopped && (stage == "wake" || stage == "command_offline")) recoverOrStop()
+        if (!stopped && (stage == "wake" || stage == "command_offline"))
+            recoverOrStop("خطای میکروفون Vosk: ${e?.localizedMessage ?: "نامشخص"}")
     } }
 
     private fun handleCommand(text: String, inferred: DanaAction? = null) {
@@ -451,7 +481,7 @@ class DanaWakeService : Service(), RecognitionListener {
                 else notifyForUser(text,
                     "برای باز کردن ${action.name} اعلان را لمس کن یا دسترسی اجرای صوتی را فعال کن")
             }
-            is DanaAction.Unknown -> reply("این جمله رو نفهمیدم. لطفاً کوتاه‌تر بگو؛ برای فرمان‌های متنوع‌تر می‌تونی هوش مصنوعی اختیاری رو تنظیم کنی.")
+            is DanaAction.Unknown -> reply("این فرمان در موتور آفلاین دانا شناخته نمی‌شه. کوتاه‌تر بگو یا بگو راهنما.")
             else -> notifyForUser(text, "برای ادامه فرمان، اعلان دانا را لمس کن")
         }
     }
@@ -539,14 +569,12 @@ class DanaWakeService : Service(), RecognitionListener {
         recognition = null
         recognizer?.close(); recognizer = null
     }
-    private fun recoverOrStop() {
+    private fun recoverOrStop(reason: String = "خطای شنود Vosk") {
         if (stopped) return
         closeRecognizer()
         errors++
-        if (errors > 3) {
-            updateNotification("شنود به دلیل خطا متوقف شد؛ برای بررسی دانا را باز کن")
-            stopSelf()
-        } else main.postDelayed({ startWakeRecognition() }, (1000L * errors))
+        if (errors > 3) failWake("شنود بعد از چند خطا متوقف شد: ${reason.take(180)}")
+        else main.postDelayed({ startWakeRecognition() }, (1000L * errors))
     }
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
@@ -560,7 +588,8 @@ class DanaWakeService : Service(), RecognitionListener {
         closeRecognizer(); model?.close(); model = null
         voice?.close(); voice = null
         worker.shutdownNow()
-        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putBoolean("running", false).apply()
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
+            .putBoolean("running", false).putBoolean("ready", false).apply()
         super.onDestroy()
     }
 }

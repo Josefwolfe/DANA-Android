@@ -44,7 +44,7 @@ fun main() {
         "دوربین رو باز کن" to DanaAction.Camera,
         "تقویم رو باز کن" to DanaAction.Calendar,
         "تنظیمات وای فای رو باز کن" to DanaAction.Settings("wifi"),
-        "بلوتوث رو روشن کن" to DanaAction.Settings("bluetooth"),
+        "بلوتوث رو روشن کن" to DanaAction.Connectivity("bluetooth", true),
         "ساعت چنده" to DanaAction.Time,
         "لطفا ساعت چنده؟" to DanaAction.Time,
         "باتری چند درصده" to DanaAction.Battery,

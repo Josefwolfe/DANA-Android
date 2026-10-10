@@ -38,7 +38,10 @@ class FeatureModuleTest {
         try {
             val good = zip("vosk-model-small-fa-0.42/am/final.mdl" to "fixture",
                 "vosk-model-small-fa-0.42/conf/mfcc.conf" to "fixture")
-            WakeModelInstaller.install(ByteArrayInputStream(good), root)
+            val stages = mutableListOf<WakeModelInstaller.Progress>()
+            WakeModelInstaller.install(ByteArrayInputStream(good), root) { stages.add(it) }
+            assertTrue(stages.isNotEmpty())
+            assertTrue(stages.last().stage.contains("نصب شد"))
             assertTrue(WakeModelInstaller.installed(root))
             val malicious = zip("../path-escape.txt" to "unsafe")
             assertTrue(runCatching { WakeModelInstaller.install(ByteArrayInputStream(malicious), root) }.isFailure)

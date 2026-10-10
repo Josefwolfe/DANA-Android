@@ -77,7 +77,9 @@ object FeatureRegression {
             val valid = archive(
                 "vosk-model-small-fa-0.42/am/final.mdl" to "fake model test only",
                 "vosk-model-small-fa-0.42/conf/mfcc.conf" to "fake conf test only")
-            WakeModelInstaller.install(ByteArrayInputStream(valid), root)
+            val progress = mutableListOf<WakeModelInstaller.Progress>()
+            WakeModelInstaller.install(ByteArrayInputStream(valid), root) { progress.add(it) }
+            test(progress.isNotEmpty() && progress.last().stage.contains("نصب شد"))
             test(WakeModelInstaller.installed(root))
             test(File(root, "am/final.mdl").readText() == "fake model test only")
             val evil = archive("../outside.txt" to "bad")
@@ -88,6 +90,6 @@ object FeatureRegression {
             test(runCatching { WakeModelInstaller.install(ByteArrayInputStream(invalid), root) }.isFailure)
             test(WakeModelInstaller.installed(root))
         } finally { dir.deleteRecursively() }
-        println("DANA v1.3 feature regression: $count/$count cases passed")
+        println("DANA v1.8 feature regression: $count/$count cases passed")
     }
 }
