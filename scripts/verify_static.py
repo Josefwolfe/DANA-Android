@@ -117,7 +117,7 @@ print('PASS: alias consent, HTTPS error recovery, foreground microphone failure 
 
 # v1.3 RC4 delivery/build hardening.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.7-whisper-offline-beta"' in app_gradle and 'versionCode = 26' in app_gradle
+assert 'versionName = "1.9.8-whisper-timeout-fallback-beta"' in app_gradle and 'versionCode = 27' in app_gradle
 assert 'DANA_KEYSTORE_PATH' in app_gradle and 'DANA_KEYSTORE_PASSWORD' in app_gradle
 assert (root / 'app/proguard-rules.pro').is_file()
 assert 'android:usesCleartextTraffic="false"' in manifest_xml
@@ -135,7 +135,7 @@ print('PASS: release signing, cleartext blocking, preflight and final handoff ch
 
 # v1.3 RC4 finalization: safer calls, system-only notification listener, and wrapper-independent CI.
 app_gradle = (root / 'app/build.gradle.kts').read_text()
-assert 'versionName = "1.9.7-whisper-offline-beta"' in app_gradle and 'versionCode = 26' in app_gradle
+assert 'versionName = "1.9.8-whisper-timeout-fallback-beta"' in app_gradle and 'versionCode = 27' in app_gradle
 assert 'android.permission.CALL_PHONE' not in permissions, 'RC4 must use ACTION_DIAL, not direct-call permission.'
 activity = (pkg / 'MainActivity.kt').read_text()
 assert 'Intent.ACTION_CALL' not in activity
@@ -223,7 +223,7 @@ assert 'کنم|کنی|کنه' in engine
 assert '"بیار", "روشن"' in engine
 assert '"TORCH_SET_REQUESTED"' in wake and '"TORCH_SET_FAILED"' in wake
 assert '"TORCH_SET_FAILED"' in (pkg / 'WakeExecutionMetrics.kt').read_text()
-assert 'DANA 1.9.7 WhisperOfflineHybrid' in (main / 'res/layout/activity_main.xml').read_text()
+assert 'DANA 1.9.8 WhisperTimeoutFallback' in (main / 'res/layout/activity_main.xml').read_text()
 print('PASS: v1.9.5 safe Persian command aliases, camera launch, torch diagnostics and version label.')
 
 # v1.9.6: explicitly on-device Android recognition after Vosk wake, with local fallback.
@@ -252,3 +252,16 @@ assert 'externalNativeBuild' in app_gradle
 for wf in ('android-debug.yml', 'android-release.yml'):
     assert 'fetch_whisper_cpp.sh' in (root / '.github/workflows' / wf).read_text()
 print('PASS: v1.9.7 pinned Whisper JNI build, model import and offline command routing.')
+
+# v1.9.8: bound Whisper native work, fallback without online recognition, and distinguish
+# wake-stage Vosk hypotheses from real command transcripts.
+assert (pkg / 'WhisperWatchdogPolicy.kt').is_file()
+assert 'main.postDelayed(whisperTimeout, WhisperWatchdogPolicy.COMMAND_TIMEOUT_MS)' in wake
+assert 'fallbackFromWhisper("پردازش Whisper طولانی شد", timedOut = true)' in wake
+assert 'whisperDisabledForSession = true' in wake
+assert 'startCommandRecognitionOnDevice(false)' in wake
+assert 'startCommandRecognitionOffline(false)' in wake
+assert 'WakeSpeechProbe.captureWake(text)' in wake
+assert 'Last wake-stage Vosk phrase (not a command)' in (pkg / 'WakeSpeechProbe.kt').read_text()
+assert 'Whisper timeouts:' in (pkg / 'WhisperMetrics.kt').read_text()
+print('PASS: v1.9.8 Whisper watchdog, offline-only fallback and honest transcript diagnostics.')

@@ -47,7 +47,7 @@ object DiagnosticReport {
         val freeMb = root.usableSpace / (1024L * 1024L)
         val lastFailure = DiagnosticEventRules.failureCategory(wake.getString("last_stop_reason", null))
         return buildString {
-            append("DANA DIAGNOSTICS v1.9.7 (user initiated)\n")
+            append("DANA DIAGNOSTICS v1.9.8 (user initiated)\n")
             append("=================================\n")
             append(check("Generated", now))
             append(check("App version", version))
@@ -89,7 +89,9 @@ object DiagnosticReport {
             append(check("Whisper model MB", if (WhisperModelInstaller.installed(whisperRoot))
                 WhisperModelInstaller.model(whisperRoot).length() / (1024 * 1024) else 0))
             append(WhisperMetrics.report())
-            append("Offline command engine preference: WHISPER > ANDROID_ON_DEVICE > VOSK\n")
+            append(check("Whisper disabled for current wake service", flag(
+                wake.getBoolean("whisper_disabled_for_session", false))))
+            append("Offline command engine preference: WHISPER (bounded) > ANDROID_ON_DEVICE > VOSK\n")
             append("\n[SPEECH / TTS]\n")
             append(check("Android recognizer available", recognition))
             append(check("Android on-device recognizer", onDevice))

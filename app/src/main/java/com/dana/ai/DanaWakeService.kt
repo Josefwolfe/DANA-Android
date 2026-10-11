@@ -57,6 +57,13 @@ class DanaWakeService : Service() {
     private var commandSpeech: SpeechManager? = null
     private var whisperSpeech: WhisperCommandRecognizer? = null
     private var onDeviceUnavailableForSession = false
+    private var whisperDisabledForSession = false
+    private var beepWhenOnDeviceReady = false
+    private val whisperTimeout = Runnable {
+        if (WhisperWatchdogPolicy.shouldTimeout(stage, stopped)) {
+            fallbackFromWhisper("پردازش Whisper طولانی شد", timedOut = true)
+        }
+    }
     private var stage = "init" // init, wake, reply, command_on_device, fallback_pending, command_offline, paused, closed
     private val uiHandoffTimeout = Runnable {
         if (!stopped && stage == "ui_handoff") startWakeRecognition()
@@ -120,6 +127,8 @@ class DanaWakeService : Service() {
                 if (stage == "wake" || stage == "command_offline" || stage == "command_online" || stage == "command_on_device" || stage == "command_whisper" || stage == "fallback_pending") {
                     commandSpeech?.cancel()
                     whisperSpeech?.cancel()
+                    beepWhenOnDeviceReady = false
+                    main.removeCallbacks(whisperTimeout)
                     main.removeCallbacks(onlineTimeout)
                     closeRecognizer()
                     stage = "paused"
@@ -173,10 +182,13 @@ class DanaWakeService : Service() {
         DiagnosticEvents.record(this, "WAKE_SERVICE_CREATED")
         voice = DanaVoice(this) { /* If TTS unavailable, notification remains readable. */ }
         whisperSpeech = WhisperCommandRecognizer(this)
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
+            .putBoolean("whisper_disabled_for_session", false).apply()
         commandSpeech = SpeechManager(this,
             onResult = { phrase -> main.post {
                 if (!stopped && (stage == "command_on_device" || stage == "command_online")) {
                     val wasOnDevice = stage == "command_on_device"
+                    beepWhenOnDeviceReady = false
                     main.removeCallbacks(onlineTimeout)
                     commandSpeech?.close()
                     WakeSessionMetrics.commandCaptured()
@@ -190,8 +202,15 @@ class DanaWakeService : Service() {
                     handleCommand(phrase)
                 }
             } },
-            onStatus = { message -> if (stage == "command_on_device" || stage == "command_online")
-                updateNotification(message) },
+            onStatus = { message ->
+                if (stage == "command_on_device" && beepWhenOnDeviceReady &&
+                    message == "در حال گوش دادن…") {
+                    beepWhenOnDeviceReady = false
+                    wakeAcknowledgement() // Beep only after Android has armed its microphone.
+                }
+                if (stage == "command_on_device" || stage == "command_online")
+                    updateNotification(message)
+            },
             onError = { message -> main.post {
                 if (!stopped && stage == "command_on_device") fallbackToVosk(message)
                 else if (!stopped && stage == "command_online") startCommandRecognitionOffline()
@@ -278,6 +297,8 @@ class DanaWakeService : Service() {
         main.removeCallbacks(finishCommandAfterSilence)
         main.removeCallbacks(uiHandoffTimeout)
         main.removeCallbacks(responseWatchdog)
+        main.removeCallbacks(whisperTimeout)
+        beepWhenOnDeviceReady = false
         commandCollector.reset()
         whisperSpeech?.cancel()
         commandSpeech?.close()
@@ -305,7 +326,9 @@ class DanaWakeService : Service() {
     private fun startCommandRecognition() {
         if (stopped) return
         val whisperRoot = getDir(WhisperModelInstaller.DIR, MODE_PRIVATE)
-        if (WhisperModelInstaller.installed(whisperRoot) && WhisperNative.available) {
+        if (WhisperWatchdogPolicy.useWhisper(
+                WhisperModelInstaller.installed(whisperRoot), WhisperNative.available,
+                whisperDisabledForSession)) {
             startCommandRecognitionWhisper(WhisperModelInstaller.model(whisperRoot))
             return
         }
@@ -326,12 +349,15 @@ class DanaWakeService : Service() {
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
         WakeSessionMetrics.commandWindow()
         WhisperMetrics.start()
+        main.removeCallbacks(whisperTimeout)
+        main.postDelayed(whisperTimeout, WhisperWatchdogPolicy.COMMAND_TIMEOUT_MS)
         DiagnosticEvents.record(this, "WAKE_COMMAND_START", "WHISPER_LOCAL")
         updateNotification("Whisper آفلاین آماده است؛ فرمان فارسی را بگو")
         whisperSpeech?.start(modelFile,
             onStatus = { message -> if (!stopped && stage == "command_whisper") updateNotification(message) },
             onResult = { phrase ->
                 if (!stopped && stage == "command_whisper") {
+                    main.removeCallbacks(whisperTimeout)
                     WhisperMetrics.success()
                     WakeSessionMetrics.commandCaptured()
                     WakeSpeechProbe.capture(phrase, "WHISPER_LOCAL")
@@ -341,20 +367,46 @@ class DanaWakeService : Service() {
                 }
             },
             onError = { message ->
-                if (!stopped && stage == "command_whisper") {
-                    WhisperMetrics.failure()
-                    DiagnosticEvents.record(this, "WHISPER_COMMAND_FAILED", "VOSK_FALLBACK")
-                    stage = "fallback_pending"
-                    updateNotification("$message؛ بعد از بوق دوباره فرمان را بگو")
-                    wakeAcknowledgement()
-                    main.postDelayed({
-                        if (!stopped && stage == "fallback_pending") startCommandRecognitionOffline(false)
-                    }, 220L)
-                }
+                if (!stopped && stage == "command_whisper")
+                    fallbackFromWhisper(message, timedOut = false)
             })
     }
 
-    private fun startCommandRecognitionOnDevice() {
+    /** Fail open to another LOCAL recognizer; never leave the user waiting indefinitely.
+     * A timed-out JNI decode cannot be killed safely, so do not start Whisper again
+     * until this wake service is restarted. Late callbacks are generation-guarded. */
+    private fun fallbackFromWhisper(reason: String, timedOut: Boolean) {
+        if (!WhisperWatchdogPolicy.shouldTimeout(stage, stopped)) return
+        main.removeCallbacks(whisperTimeout)
+        whisperSpeech?.cancel()
+        if (timedOut) WhisperMetrics.timeout() else WhisperMetrics.failure()
+        WhisperMetrics.fallback()
+        whisperDisabledForSession = true
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit()
+            .putBoolean("whisper_disabled_for_session", true).apply()
+        stage = "fallback_pending"
+        getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
+        DiagnosticEvents.record(this, if (timedOut) "WHISPER_COMMAND_TIMEOUT" else
+            "WHISPER_COMMAND_FAILED", "LOCAL_FALLBACK")
+        updateNotification("$reason؛ منتظر بوق موتور جایگزین بمان و دوباره فرمان را بگو")
+        main.postDelayed({
+            if (!stopped && stage == "fallback_pending") {
+                val available = commandSpeech?.hasOnDeviceRecognizer() == true
+                if (WakeAsrRoutingPolicy.useAndroidOnDevice(Build.VERSION.SDK_INT,
+                        available, onDeviceUnavailableForSession)) {
+                    DiagnosticEvents.record(this, "WHISPER_FALLBACK", "ANDROID_ON_DEVICE")
+                    beepWhenOnDeviceReady = true
+                    startCommandRecognitionOnDevice(false)
+                } else {
+                    DiagnosticEvents.record(this, "WHISPER_FALLBACK", "VOSK_LOCAL")
+                    startCommandRecognitionOffline(false)
+                    if (!stopped && stage == "command_offline") wakeAcknowledgement()
+                }
+            }
+        }, 350L)
+    }
+
+    private fun startCommandRecognitionOnDevice(countWindow: Boolean = true) {
         if (stopped) return
         whisperSpeech?.cancel()
         main.removeCallbacks(finishCommandAfterSilence)
@@ -362,7 +414,7 @@ class DanaWakeService : Service() {
         closeRecognizer() // Vosk must release microphone before Android on-device starts.
         stage = "command_on_device"
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
-        WakeSessionMetrics.commandWindow()
+        if (countWindow) WakeSessionMetrics.commandWindow()
         WakeAsrMetrics.androidStart()
         DiagnosticEvents.record(this, "WAKE_COMMAND_START", "ANDROID_ON_DEVICE")
         updateNotification("بعد از بوق فرمان را بگو؛ تشخیص کاملاً آفلاین گوشی")
@@ -375,6 +427,7 @@ class DanaWakeService : Service() {
         if (!WakeAsrRoutingPolicy.retryWithVosk(stage, stopped)) return
         // Avoid repeated on-device failures for every wake until the service restarts.
         onDeviceUnavailableForSession = true
+        beepWhenOnDeviceReady = false
         stage = "fallback_pending" // Block duplicate late onError callbacks before rearming Vosk.
         getSharedPreferences("wake_runtime", MODE_PRIVATE).edit().putString("stage", stage).apply()
         main.removeCallbacks(onlineTimeout)
@@ -382,10 +435,12 @@ class DanaWakeService : Service() {
         WakeAsrMetrics.androidError(reason)
         WakeAsrMetrics.voskFallback()
         DiagnosticEvents.record(this, "ANDROID_ON_DEVICE_FAILED", "VOSK_FALLBACK")
-        updateNotification("موتور فارسی آفلاین گوشی آماده نیست؛ بعد از بوق دوباره فرمان را بگو")
-        wakeAcknowledgement()
+        updateNotification("موتور فارسی آفلاین گوشی آماده نیست؛ منتظر بوق بمان و دوباره فرمان را بگو")
         main.postDelayed({
-            if (!stopped && stage == "fallback_pending") startCommandRecognitionOffline(false)
+            if (!stopped && stage == "fallback_pending") {
+                startCommandRecognitionOffline(false)
+                if (!stopped && stage == "command_offline") wakeAcknowledgement()
+            }
         }, 220L)
     }
 
@@ -496,7 +551,7 @@ class DanaWakeService : Service() {
         val text = runCatching { JSONObject(hypothesis ?: "{}").optString("text").trim() }.getOrDefault("")
         if (text.isBlank()) return
         // Opt-in only: helps diagnose whether unrestricted Vosk hears the wake word at all.
-        if (sourceStage == "wake") WakeSpeechProbe.capture(text)
+        if (sourceStage == "wake") WakeSpeechProbe.captureWake(text)
         when (sourceStage) {
             "wake" -> {
                 val inlineCommand = WakePhrase.extractAfterWake(text) ?: return

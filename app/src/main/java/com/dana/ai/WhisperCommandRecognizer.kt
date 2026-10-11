@@ -40,7 +40,9 @@ class WhisperCommandRecognizer(private val context: Context) {
                         else {
                             WhisperMetrics.capture()
                             status("در حال تبدیل گفتار به متن، کاملاً روی گوشی…")
-                            val phrase = WhisperNative.transcribe(model.absolutePath, samples)
+                            val phrase = WhisperNative.transcribe(model.absolutePath, samples,
+                                shouldContinue = { valid() },
+                                onDecodeStart = { if (valid()) WhisperMetrics.decoding() })
                             if (valid()) {
                                 if (phrase.isBlank()) error("Whisper جمله‌ای تشخیص نداد")
                                 else main.post { if (valid()) onResult(phrase) }
@@ -54,7 +56,7 @@ class WhisperCommandRecognizer(private val context: Context) {
         }
     }
 
-    /** 16 kHz mono PCM. End after ~0.9 s of silence, cap at 9 s. */
+    /** 16 kHz mono PCM. End after ~0.8 s of silence, cap at 6 s for phone CPU. */
     private fun recordUntilSilence(token: Int): FloatArray? {
         // A permission check in start() does not protect this call if the user
         // revokes RECORD_AUDIO between scheduling and opening the microphone.
@@ -81,7 +83,7 @@ class WhisperCommandRecognizer(private val context: Context) {
             error("Microphone not initialized")
         }
         recorder = audio
-        val maxSamples = rate * 9
+        val maxSamples = rate * 6
         val pcm = FloatArray(maxSamples)
         val block = ShortArray(1600)
         var filled = 0
@@ -107,7 +109,7 @@ class WhisperCommandRecognizer(private val context: Context) {
                     voicedBlocks++
                     silentBlocks = 0
                 } else if (speech) silentBlocks++
-                if (speech && silentBlocks >= 9 && filled >= rate) break
+                if (speech && silentBlocks >= 8 && filled >= rate) break
             }
         } finally {
             recorder = null

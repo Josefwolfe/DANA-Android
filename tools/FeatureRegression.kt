@@ -33,6 +33,18 @@ object FeatureRegression {
         test("ساعت چنده" in WakeSpeechProbe.report())
         WakeSpeechProbe.disable()
         test("ساعت چنده" !in WakeSpeechProbe.report())
+        test(WhisperWatchdogPolicy.COMMAND_TIMEOUT_MS == 25_000L)
+        test(WhisperWatchdogPolicy.shouldTimeout("command_whisper", false))
+        test(!WhisperWatchdogPolicy.shouldTimeout("wake", false))
+        test(!WhisperWatchdogPolicy.shouldTimeout("command_whisper", true))
+        test(WhisperWatchdogPolicy.useWhisper(true, true, false))
+        test(!WhisperWatchdogPolicy.useWhisper(true, true, true))
+        test(WakeSpeechProbe.toggle())
+        WakeSpeechProbe.captureWake("دارم")
+        test("Last command phrase: (none yet)" in WakeSpeechProbe.report())
+        WakeSpeechProbe.capture("ساعت چنده", "WHISPER_LOCAL")
+        test("Command recognizer: WHISPER_LOCAL" in WakeSpeechProbe.report())
+        WakeSpeechProbe.disable()
         test(WakePhrase.extractAfterWake("سلام دانا") == "")
         test(WakePhrase.extractAfterWake("دانا") == "")
         test(WakePhrase.extractAfterWake("دانا تلگرام رو باز کن") == "تلگرام رو باز کن")
@@ -123,6 +135,6 @@ object FeatureRegression {
             test(runCatching { WakeModelInstaller.install(ByteArrayInputStream(invalid), root) }.isFailure)
             test(WakeModelInstaller.installed(root))
         } finally { dir.deleteRecursively() }
-        println("DANA v1.8 feature regression: $count/$count cases passed")
+        println("DANA v1.9.8 feature regression: $count/$count cases passed")
     }
 }

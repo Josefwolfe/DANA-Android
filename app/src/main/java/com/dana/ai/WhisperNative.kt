@@ -15,10 +15,17 @@ object WhisperNative {
     fun release() { if (available) runCatching { nativeRelease() } }
 
     /** Call only from a background thread; loading and decoding are expensive. */
-    fun transcribe(modelPath: String, samples: FloatArray): String {
+    fun transcribe(modelPath: String, samples: FloatArray,
+                   shouldContinue: () -> Boolean = { true },
+                   onDecodeStart: () -> Unit = {}): String {
         check(available) { "Whisper native library is not available" }
         require(samples.isNotEmpty() && samples.size <= 16000 * 15) { "Invalid recording length" }
+        if (!shouldContinue()) return ""
         check(nativeInitialize(modelPath)) { "Whisper model could not be opened" }
+        // Model loading can be slow. If the watchdog fired while loading,
+        // avoid starting an expensive decode after the caller has fallen back.
+        if (!shouldContinue()) return ""
+        onDecodeStart()
         return nativeTranscribe(samples).trim()
     }
 }

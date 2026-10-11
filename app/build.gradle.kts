@@ -19,8 +19,8 @@ android {
         applicationId = "com.dana.ai"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "1.9.7-whisper-offline-beta"
+        versionCode = 27
+        versionName = "1.9.8-whisper-timeout-fallback-beta"
     }
 
     compileOptions {
